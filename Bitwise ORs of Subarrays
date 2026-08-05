@@ -1,0 +1,58 @@
+#include <stdlib.h>
+#include <string.h>
+
+#define HASH_SIZE 1000003
+
+typedef struct {
+    int* keys;
+    char* used;
+} HashSet;
+
+void hash_insert(HashSet* set, int key, int* count) {
+    unsigned int hash = ((unsigned int)key) % HASH_SIZE;
+    while (set->used[hash]) {
+        if (set->keys[hash] == key) return;
+        hash = (hash + 1) % HASH_SIZE;
+    }
+    set->keys[hash] = key;
+    set->used[hash] = 1;
+    (*count)++;
+}
+
+int subarrayBitwiseORs(int* arr, int arrSize) {
+    if (arrSize == 0) return 0;
+
+    HashSet set;
+    set.keys = (int*)calloc(HASH_SIZE, sizeof(int));
+    set.used = (char*)calloc(HASH_SIZE, sizeof(char));
+    int total_distinct = 0;
+
+    int* current_ors = (int*)malloc(35 * sizeof(int));
+    int current_size = 0;
+
+    for (int i = 0; i < arrSize; i++) {
+        int* next_ors = (int*)malloc(35 * sizeof(int));
+        int next_size = 0;
+
+        next_ors[next_size++] = arr[i];
+        hash_insert(&set, arr[i], &total_distinct);
+
+        for (int j = 0; j < current_size; j++) {
+            int val = current_ors[j] | arr[i];
+            if (val != next_ors[next_size - 1]) {
+                next_ors[next_size++] = val;
+                hash_insert(&set, val, &total_distinct);
+            }
+        }
+
+        free(current_ors);
+        current_ors = next_ors;
+        current_size = next_size;
+    }
+
+    free(current_ors);
+    free(set.keys);
+    free(set.used);
+
+    return total_distinct;
+}
