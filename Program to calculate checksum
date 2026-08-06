@@ -1,0 +1,547 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h> 
+void splitAndPrintPackets(const char *src_ip, const char *dest_ip, unsigned int src_port, unsigned int dest_port, const char *text);
+void convertPortToBinary(unsigned int port);
+unsigned short calculateChecksum(const char *binaryData, int n);
+void printBits(unsigned long value, int bit_count);
+void stuffPPPFrames();
+void convertMACToBinary(const char *mac_str);
+char* readFileContent(const char *filename);
+void convertToBinary(const char *text);
+void ApplicationLayer(const char *text);
+void Executer(void);
+void convertIPToBinary(const char *ip_str);
+void convertPortToBinary(unsigned int port) {
+   int j;
+   for (j = 15; j >= 0; j--) {
+        int bit = (port >> j) & 1;
+        printf("%d", bit);
+    }
+}
+void printBits(unsigned long value, int bit_count) {
+   int j;
+   for (j = bit_count - 1; j >= 0; j--) {
+        printf("%lu", (value >> j) & 1);
+    }
+}
+void convertMACToBinary(const char *mac_str) {
+    unsigned int bytes[4];
+    if (sscanf(mac_str, "%x:%x:%x:%x", &bytes[0], &bytes[1], &bytes[2], &bytes[3]) != 4) {
+        printf("00000000000000000000000000000000");
+        return;
+    }
+    int i,j;
+    for (i = 0; i < 4; i++) {
+        for (j = 7; j >= 0; j--) {
+            int bit = (bytes[i] >> j) & 1;
+            printf("%d", bit);
+        }
+    }
+}
+void printBinary16(unsigned int value) {
+    int i;
+    for (i = 15; i >= 0; i--) {
+        printf("%c", (value & (1 << i)) ? '1' : '0');
+    }
+}
+void calculatePPPChecksum(const char *address, const char *control, const char *protocol, const char *data, char *fcs_out) {
+    char full_payload[2048] = "";
+    strcat(full_payload, address);    
+    strcat(full_payload, control);
+    strcat(full_payload, protocol);
+    strcat(full_payload, data);
+    printf("Address  : %s\n", address);
+    printf("Control  : %s\n", control);
+    printf("Protocol : %s\n", protocol);
+    printf("Data     : %s\n", data);
+    printf("\nCombined Payload:\n%s\n", full_payload);
+    int total_bits = strlen(full_payload);
+    printf("\nTotal Payload Length = %d bits\n", total_bits);
+    unsigned long sum = 0;
+    int i, j;
+    for (i = 0; i < total_bits; i += 16) {
+        unsigned int block_val = 0;
+        unsigned int previousSum = (unsigned int)sum;
+        for (j = 0; j < 16; j++) {
+            block_val <<= 1;
+            if ((i + j) < total_bits) {
+                if (full_payload[i + j] == '1')
+                    block_val |= 1;
+            }
+        }
+        printf("\nBlock %2d : ", (i / 16) + 1);
+        printBinary16(block_val);
+        printf("\nPrevious Sum : ");
+        printBinary16(previousSum);
+        printf("\nAdd Block    : ");
+        printBinary16(block_val);
+        sum += block_val;
+        if (sum > 0xFFFF) {
+            int k;
+            for (k = 16; k >= 0; k--)
+                printf("%c", (sum & (1UL << k)) ? '1' : '0');
+        } else {
+            printBinary16((unsigned int)sum);
+        }
+        printf("\n");
+    }
+    printf("\n------------ CARRY FOLDING ------------\n");
+    while (sum >> 16) {
+        printf("\nCurrent Sum : ");
+        if (sum > 0xFFFF) {
+            int k;
+            for (k = 16; k >= 0; k--)
+                printf("%c", (sum & (1UL << k)) ? '1' : '0');
+        } else {
+            printBinary16((unsigned int)sum);
+        }
+        printf("\nCarry       : ");
+        printBinary16((unsigned int)(sum >> 16));
+        sum = (sum & 0xFFFF) + (sum >> 16);
+        printf("\nAfter Fold  : ");
+        printBinary16((unsigned int)sum);
+        printf("\n");
+    }
+    printf("\nFinal Sum          : ");
+    printBinary16((unsigned int)sum);
+    unsigned int checksum = ~sum & 0xFFFF;
+    printf("\nOne's Complement   : ");
+    printBinary16(checksum);
+    for (i = 15; i >= 0; i--) {
+        fcs_out[i] = (checksum & 1) ? '1' : '0';
+        checksum >>= 1;
+    }
+    fcs_out[16] = '\0';
+    printf("\nFinal PPP Checksum : %s\n", fcs_out);
+    printf("================ END OF CHECKSUM CALCULATION ================\n");
+}
+void pppLayer(const char *frame_data, int frame_size, const char *protocol_bits) {
+    const char *flag = "01111110";
+    const char *address = "11111111";
+    const char *control = "00000011";
+    char fcs[17];
+    calculatePPPChecksum(address, control, protocol_bits, frame_data, fcs);
+    printf("\n    [PPP FRAME OUTPUT]\n");
+    printf("    Flag:     %s\n", flag);
+    printf("    Address:  %s\n", address);
+    printf("    Control:  %s\n", control);
+    printf("    Protocol: %s\n", protocol_bits);
+    printf("    Data:     %s\n", frame_data);
+    printf("    FCS:      %s\n", fcs);
+    printf("    Flag:     %s\n", flag);
+    FILE *file = fopen("ppp_output.txt", "a");
+    if (file != NULL) {
+        fprintf(file, "%s %s %s %s %s %s %s\n", flag, address, control, protocol_bits, frame_data, fcs, flag);
+        fclose(file);
+    } else {
+        printf("    Error: Could not save PPP frame data to file.\n");
+    }
+}
+void datalinkLayer(const char *src_mac, const char *dest_mac, const char *src_ip, const char *dest_ip,
+                   unsigned int src_port, unsigned int dest_port, const char *text,
+                   int choice, int checksum_n) {
+    printf("\n--- Data Link Layer Execution ---\n");
+    int i, j;
+    char binaryMessage[4096] = "";
+    for (i = 0; text[i] != '\0'; i++) {
+        char ch = text[i];
+        for (j = 7; j >= 0; j--) {
+            int bit = (ch >> j) & 1;
+            char bit_str[2];
+            sprintf(bit_str, "%d", bit);
+            strcat(binaryMessage, bit_str);
+        }
+    }
+    int total_text_bits = strlen(binaryMessage);
+    int packet_size = 0;
+    int frame_size = 0;
+    printf("Enter Packet Data size (in bits): ");
+    if (scanf("%d", &packet_size) != 1 || packet_size <= 0) return;
+    printf("Enter Frame Data size (in bits): ");
+    if (scanf("%d", &frame_size) != 1 || frame_size <= 0) return;
+    printf("\n--- PPP Layer Protocol Selection ---\n");
+    printf("1. TCP  (0000000000000110)\n");
+    printf("2. UDP  (0000000000010001)\n");
+    printf("3. IPv4 (0000100000000000)\n");
+    printf("4. IPv6 (1000011011011101)\n");
+    printf("5. LCP  (1100000000100001)\n");
+    printf("6. NCP  (1000000000100001)\n");
+    printf("Select Protocol choice (1-6): ");
+    int proto_choice;
+    if (scanf("%d", &proto_choice) != 1) proto_choice = 1;
+    char protocol_bits[17] = "0000000000000000";
+    switch (proto_choice) {
+        case 1: strcpy(protocol_bits, "0000000000000110"); break;
+        case 2: strcpy(protocol_bits, "0000000000010001"); break;
+        case 3: strcpy(protocol_bits, "0000100000000000"); break;
+        case 4: strcpy(protocol_bits, "1000011011011101"); break;
+        case 5: strcpy(protocol_bits, "1100000000100001"); break;
+        case 6: strcpy(protocol_bits, "1000000000100001"); break;
+        default: strcpy(protocol_bits, "1100000000100001"); break;
+    }
+    int text_bit_index = 0;
+    int packet_count = 1;
+    while (text_bit_index < total_text_bits) {
+        char current_packet_bits[512] = "";
+
+        for (i = 0; i < packet_size; i++) {
+            if (text_bit_index < total_text_bits) {
+                current_packet_bits[i] = binaryMessage[text_bit_index];
+                text_bit_index++;
+            } else {
+                current_packet_bits[i] = '0';
+            }
+            current_packet_bits[i + 1] = '\0';
+        }
+        printf("\n======================================================================\n");
+        printf(" PROCESSING PACKET #%d (Data Size: %d bits)\n", packet_count++, packet_size);
+        printf("======================================================================\n");
+        int packet_bit_index = 0;
+        int frame_count = 1;
+        int total_packet_bits = strlen(current_packet_bits);
+        while (packet_bit_index < total_packet_bits) {
+            char current_frame_bits[512] = "";
+            int k;
+            for (k = 0; k < frame_size; k++) {
+                if (packet_bit_index < total_packet_bits) {
+                    current_frame_bits[k] = current_packet_bits[packet_bit_index];
+                    packet_bit_index++;
+                } else {
+                    current_frame_bits[k] = '0';
+                }
+                current_frame_bits[k + 1] = '\0';
+            }
+            printf("  Frame #%d: [Datalink Header omitted]\n", frame_count++);
+            pppLayer(current_frame_bits, frame_size, protocol_bits);
+            stuffPPPFrames();
+        }
+    }
+    printf("----------------------------------------------------------------------\n");
+}
+void TransportLayer(const char *text, unsigned int *out_src_port, unsigned int *out_dest_port) {
+    // Generate ports between 0 and 65536
+    *out_src_port = rand() % 65537;
+    *out_dest_port = rand() % 65537;
+    printf("\n--- Transport Layer ---\n");
+    printf("Binary Source Port: ");
+    convertPortToBinary(*out_src_port);
+    printf("\nBinary Destination Port: ");
+    convertPortToBinary(*out_dest_port);
+    printf("\n");
+    printf("Binary Message: ");
+    convertToBinary(text);
+}
+void NetworkLayer(const char *src_ip, const char *dest_ip, unsigned int src_port, unsigned int dest_port, const char *text) {
+    printf("\n--- Network Layer ---\n");
+    printf("Source IP: %s\n", src_ip);
+    printf("Destination IP: %s\n", dest_ip);
+    printf("Source IP Binary Form: ");
+    convertIPToBinary(src_ip);
+    printf("\nDestination IP Binary Form: ");
+    convertIPToBinary(dest_ip);
+    printf("\n");
+    splitAndPrintPackets(src_ip, dest_ip, src_port, dest_port, text);
+}
+void splitAndPrintPackets(const char *src_ip, const char *dest_ip, unsigned int src_port, unsigned int dest_port, const char *text) {
+    char binaryMessage[32768] = ""; // Large buffer to hold text bits
+    int i,j;
+    for (i = 0; text[i] != '\0'; i++) {
+        char ch = text[i];
+        for (j = 7; j >= 0; j--) {
+            int bit = (ch >> j) & 1;
+            char bit_str[2];
+            sprintf(bit_str, "%d", bit);
+            strcat(binaryMessage, bit_str);
+        }
+    }
+    int total_bits = strlen(binaryMessage);
+    int packet_size = 0;
+    printf("\nEnter packet data chunk size (in bits, e.g., 8, 16, 24, 32): ");
+    if (scanf("%d", &packet_size) != 1 || packet_size <= 0) {
+        printf("Invalid packet size.\n");
+        return;
+    }
+    printf("\n=== Fragmented Network Packets ===\n");
+    int bit_index = 0;
+    int packet_count = 1;
+    while (bit_index < total_bits) {
+        char current_packet_data[1024] = "";
+        for (i = 0; i < packet_size; i++) {
+            if (bit_index < total_bits) {
+                char bit_str[2] = { binaryMessage[bit_index], '\0' };
+                strcat(current_packet_data, bit_str);
+                bit_index++;
+            } else {
+                strcat(current_packet_data, "0");
+            }
+        }
+        printf("Packet #%d Layout:\n", packet_count++);
+        convertIPToBinary(src_ip);
+        printf(" ");
+        convertIPToBinary(dest_ip);
+        printf(" ");
+        convertPortToBinary(src_port);
+        printf(" ");
+        convertPortToBinary(dest_port);
+        printf(" ");
+        printf("%s\n", current_packet_data);
+        printf("--------------------------------------------------\n");
+    }
+}
+void convertIPToBinary(const char *ip_str) {
+    int octets[4];
+    if (sscanf(ip_str, "%d.%d.%d.%d", &octets[0], &octets[1], &octets[2], &octets[3]) != 4) {
+        printf("Invalid IP address format.\n");
+        return;
+    }
+    printf("IP Binary: ");
+    int i,j;
+    for (i = 0; i < 4; i++) {
+        // Convert each integer segment to 8-bit binary
+        for (j = 7; j >= 0; j--) {
+            int bit = (octets[i] >> j) & 1;
+            printf("%d", bit);
+        }
+        if (i < 3) printf(" "); // Separate binary segments with dots
+    }
+    printf("\n");
+}
+struct Addnetwork {
+    char url[256];
+    char ip_address[40];
+    char mac_address[20];
+};
+struct Addnetwork netArray[10];
+int currentCount = 0;
+void getNetworkDetails(void) {
+    if (currentCount >= 10) {
+        printf("Error: Network table is full (10 max entries reached).\n");
+        return;
+    }
+    struct Addnetwork *net = &netArray[currentCount];
+    printf("\n--- Enter Details for Entry #%d (Max 10) ---\n", currentCount + 1);
+    printf("Enter URL: ");
+    scanf("%255s", net->url);
+    printf("Enter IP Address: ");
+    scanf("%39s", net->ip_address);
+    printf("Enter MAC Address: ");
+    scanf("%19s", net->mac_address);
+    currentCount++;
+    printf("Network entry saved successfully!\n");
+}
+void initDefaultNetworks(void) {
+    strcpy(netArray[0].url, "google.com");
+    strcpy(netArray[0].ip_address, "8.8.8.8");
+    strcpy(netArray[0].mac_address, "AA:BB:CC:DD");
+    strcpy(netArray[1].url, "yahoo.com");
+    strcpy(netArray[1].ip_address, "9.9.9.9");
+    strcpy(netArray[1].mac_address, "EE:FF:11:22");
+    currentCount = 2;
+}
+void DisplayNetworkTable(void) {
+    if (currentCount == 0) {
+        printf("\nNetwork table is empty. No data to display.\n");
+        return;
+    }
+
+    printf("\n+-----+-------------------------------+-----------------+-------------------+\n");
+    printf("| ID  | %-29s | %-15s | %-17s |\n", "URL", "IP Address", "MAC Address");
+    printf("+-----+-------------------------------+-----------------+-------------------+\n");
+    int i;
+    for (i = 0; i < currentCount; i++) {
+        printf("| %-3d | %-29s | %-15s | %-17s |\n",
+               i + 1, netArray[i].url, netArray[i].ip_address, netArray[i].mac_address);
+    }
+
+    printf("+-----+-------------------------------+-----------------+-------------------+\n");
+}
+char* readFileContent(const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        printf("Error: Could not open file '%s'.\n", filename);
+        return NULL;
+    }
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    rewind(file);
+
+    if (fileSize <= 0) {
+        printf("Error: File is empty.\n");
+        fclose(file);
+        return NULL;
+    }
+    char *fileContent = (char *)malloc((fileSize + 1) * sizeof(char));
+    if (fileContent == NULL) {
+        printf("Error: Memory allocation failed.\n");
+        fclose(file);
+        return NULL;
+    }
+    size_t bytesRead = fread(fileContent, sizeof(char), fileSize, file);
+    fileContent[bytesRead] = '\0'; // Append null terminator
+    fclose(file);
+    return fileContent; // Return pointer to allocated memory
+}
+void convertToBinary(const char *text) {
+    int i,j;
+    for (i = 0; text[i] != '\0'; i++) {
+        char ch = text[i];
+        for (j = 7; j >= 0; j--) {
+            int bit = (ch >> j) & 1;
+            printf("%d", bit);
+        }
+        printf(" "); // Space between byte representations
+    }
+    printf("\n---------------------\n");
+}
+void ApplicationLayer(const char *text) {
+    if (text == NULL || strlen(text) == 0) {
+        printf("Error: No data available to process.\n");
+        return;
+    }
+    printf("Application Layer: \n");
+    printf("Contents of the file: ");
+    int i;
+    for(i=0;i<strlen(text);i++){
+       printf("%c",text[i]);
+    }
+    convertToBinary(text);
+}
+#define MAX_FRAME_LEN 8192
+void get_8_bits(const char *src, int index, char *dest) {
+    strncpy(dest, &src[index], 8);
+    dest[8] = '\0';
+}
+void stuffPPPFrames() {
+    FILE *infile = fopen("ppp_output.txt", "r");
+    FILE *outfile = fopen("ppp_stuffed_output.txt", "w");
+    int i,j; 
+    if (!infile) {
+        printf("\nError: Could not open ppp_output.txt for stuffing.\n");
+        return;
+    }
+    if (!outfile) {
+        printf("\nError: Could not create ppp_stuffed_output.txt.\n");
+        fclose(infile);
+        return;
+    }
+    printf("\n=== EXECUTING CHARACTER STUFFING ===\n");
+    char line[MAX_FRAME_LEN];
+    while (fgets(line, sizeof(line), infile)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strlen(line) < 16) continue; // Skip invalid short lines
+        char raw_frame[MAX_FRAME_LEN] = "";
+        for (i = 0; line[i] != '\0'; i++) {
+            if (line[i] != ' ') {
+                int len = strlen(raw_frame);
+                raw_frame[len] = line[i];
+                raw_frame[len + 1] = '\0';
+            }
+        }
+        int total_bits = strlen(raw_frame);
+        char stuffed_frame[MAX_FRAME_LEN] = "";
+        char start_flag[9];
+        get_8_bits(raw_frame, 0, start_flag);
+        strcat(stuffed_frame, start_flag);
+        char current_byte[9];
+        for (i = 8; i < total_bits - 8; i += 8) {
+            get_8_bits(raw_frame, i, current_byte);
+            if (strcmp(current_byte, "01111110") == 0 || strcmp(current_byte, "01111101") == 0) {
+                strcat(stuffed_frame, "01111101");
+            }
+            strcat(stuffed_frame, current_byte);
+        }
+        char end_flag[9];
+        get_8_bits(raw_frame, total_bits - 8, end_flag);
+        strcat(stuffed_frame, end_flag);
+
+        // Print & Save Outputs
+        printf("Original: %s\n", raw_frame);
+        printf("Stuffed:  %s\n\n", stuffed_frame);
+        fprintf(outfile, "%s\n", stuffed_frame);
+    }
+
+    fclose(infile);
+    fclose(outfile);
+    printf("Stuffing completed. Saved to ppp_stuffed_output.txt\n");
+}
+
+void Executer(void) {
+    char filename[100];
+    char src_url[256];
+    char dest_url[256];
+    char src_ip[40] = "";
+    char src_mac[20] = "";
+    char dest_ip[40] = "";
+    char dest_mac[20] = "";
+    int src_found = 0;
+    int dest_found = 0;
+    printf("Enter Source URL: ");
+    scanf("%255s", src_url);
+    printf("Enter Destination URL: ");
+    scanf("%255s", dest_url);
+    int i;
+    for (i = 0; i < currentCount; i++) {
+        if (strcmp(netArray[i].url, src_url) == 0) {
+            strcpy(src_ip, netArray[i].ip_address);
+            strcpy(src_mac, netArray[i].mac_address);
+            src_found = 1;
+        }
+        if (strcmp(netArray[i].url, dest_url) == 0) {
+            strcpy(dest_ip, netArray[i].ip_address);
+            strcpy(dest_mac, netArray[i].mac_address);
+            dest_found = 1;
+        }
+    }
+    if (!src_found || !dest_found) {
+        printf("Error: Source or Destination URL not found in the network table.\n");
+        return;
+    }
+    printf("Enter the filename to read text from: ");
+    scanf("%99s", filename);
+    char *fileContent = readFileContent(filename);
+    if (fileContent != NULL) {
+        unsigned int src_port = 0;
+        unsigned int dest_port = 0;
+        ApplicationLayer(fileContent);
+        TransportLayer(fileContent, &src_port, &dest_port);
+        NetworkLayer(src_ip, dest_ip, src_port, dest_port, fileContent);
+        datalinkLayer(src_mac, dest_mac, src_ip, dest_ip, src_port, dest_port, fileContent,0,0);
+        free(fileContent);
+    }
+}
+int main(void) {
+    int choice;
+    initDefaultNetworks();
+    while (1) {
+        printf("\n===== MAIN MENU =====\n");
+        printf("1. Get Network Details\n");
+        printf("2. Display Network details\n");
+        printf("3. Convert File Text to Binary (Executer)\n");
+        printf("4. Exit\n");
+        printf("Enter your choice (1-4): ");
+        if (scanf("%d", &choice) != 1) {
+            printf("Invalid input. Please enter a number.\n");
+            while (getchar() != '\n'); // Clear input buffer
+            continue;
+        }
+        switch (choice) {
+            case 1:
+                getNetworkDetails();
+                break;
+            case 2:
+                DisplayNetworkTable();
+                break;
+            case 3:
+                Executer();
+                break;
+            case 4:
+                printf("Exiting the program. Goodbye!\n");
+                exit(0);
+            default:
+                printf("Invalid option. Please choose a number between 1 and 4.\n");
+        }
+    }
+    return 0;
+}
