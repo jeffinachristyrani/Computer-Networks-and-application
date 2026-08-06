@@ -1,0 +1,182 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define MAX_FRAME_LEN 8192
+void get_8_bits(const char *src, int index, char *dest) {
+    strncpy(dest, &src[index], 8);
+    dest[8] = '\0';
+}
+void destuffPPPFrames() {
+    FILE *infile = fopen("ppp_stuffed_output.txt", "r");
+    FILE *outfile = fopen("ppp_destuffed_output.txt", "w");
+    if (!infile) {
+        printf("\nError: Could not open ppp_stuffed_output.txt for destuffing.\n");
+        return;
+    }
+    if (!outfile) {
+        printf("\nError: Could not create ppp_destuffed_output.txt.\n");
+        fclose(infile);
+        return;
+    }
+    printf("\n=== EXECUTING CHARACTER DESTUFFING ===\n");
+    char line[MAX_FRAME_LEN];
+    while (fgets(line, sizeof(line), infile)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        int total_bits = strlen(line);
+        if (total_bits < 16) continue;
+        char destuffed_frame[MAX_FRAME_LEN] = "";
+        char start_flag[9];
+        get_8_bits(line, 0, start_flag);
+        strcat(destuffed_frame, start_flag);
+        char current_byte[9];
+        int i = 8;
+        while (i < total_bits - 8) {
+            get_8_bits(line, i, current_byte);
+            if (strcmp(current_byte, "01111101") == 0) {
+                i += 8; // Move pointer forward to the actual data byte
+                get_8_bits(line, i, current_byte);
+            }
+            strcat(destuffed_frame, current_byte);
+            i += 8;
+        }
+        char end_flag[9];
+        get_8_bits(line, total_bits - 8, end_flag);
+        strcat(destuffed_frame, end_flag);
+        printf("Stuffed:   %s\n", line);
+        printf("Destuffed: %s\n\n", destuffed_frame);
+        fprintf(outfile, "%s\n", destuffed_frame);
+    }
+    fclose(infile);
+    fclose(outfile);
+    printf("Destuffing completed. Saved to ppp_destuffed_output.txt\n");
+}
+void verifyDestuffedFramesChecksum() {
+    FILE *file = fopen("ppp_destuffed_output.txt", "r");
+    if (!file) {
+        printf("\nError: Could not open ppp_destuffed_output.txt for verification.\n");
+        return;
+    }
+    printf("\n=== EXECUTING RECEIVER-SIDE CHECKSUM VERIFICATION ===\n");
+    char line[8192];
+    int frame_idx = 1;
+    int i,j;
+    while (fgets(line, sizeof(line), file)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        int L = strlen(line);
+        if (L < 48) continue; // Skip invalid or empty lines
+        char address[9], control[9], protocol[17], transmitted_fcs[17];
+        strncpy(address, &line[8], 8); address[8] = '\0';
+        strncpy(control, &line[16], 8); control[8] = '\0';
+        strncpy(protocol, &line[24], 16); protocol[16] = '\0';
+        strncpy(transmitted_fcs, &line[L - 24], 16); transmitted_fcs[16] = '\0';
+        int data_len = (L - 24) - 40;
+        char *data = (char *)malloc((data_len + 1) * sizeof(char));
+        if (data_len > 0) {
+            strncpy(data, &line[40], data_len);
+            data[data_len] = '\0';
+        } else {
+            strcpy(data, "");
+        }
+        char full_payload[8192] = "";
+        strcat(full_payload, address);
+        strcat(full_payload, control);
+        strcat(full_payload, protocol);
+        strcat(full_payload, data);
+        free(data); // Free temporary data allocation
+        int total_bits = strlen(full_payload);
+        unsigned long sum = 0;
+        for (i = 0; i < total_bits; i += 16) {
+            unsigned int block_val = 0;
+            for (j = 0; j < 16; j++) {
+                block_val <<= 1;
+                if ((i + j) < total_bits) {
+                    if (full_payload[i + j] == '1') {
+                        block_val |= 1;
+                    }
+                }
+            }
+            sum += block_val;
+        }
+        while (sum >> 16) {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        unsigned int calculated_checksum = sum & 0xFFFF;
+        unsigned int fcs_val = 0;
+        for (i = 0; i < 16; i++) {
+            fcs_val <<= 1;
+            if (transmitted_fcs[i] == '1') {
+                fcs_val |= 1;
+            }
+        }
+        unsigned long final_sum = (unsigned long)calculated_checksum + fcs_val;
+        while (final_sum >> 16) {
+            final_sum = (final_sum & 0xFFFF) + (final_sum >> 16);
+        }
+        printf("Frame #%d: ", frame_idx++);
+        if ((final_sum & 0xFFFF) == 0xFFFF) {
+            printf("No error\n");
+        } else {
+            printf("Error\n");
+        }
+    }
+    fclose(file);
+}
+void displayDestuffedFrameDetails() {
+    FILE *file = fopen("ppp_destuffed_output.txt", "r");
+    if (!file) {
+        printf("\nError: Could not open ppp_destuffed_output.txt for display.\n");
+        return;
+    }
+    printf("\n=== PPP FRAME DECODING DETAILS ===\n");
+    char line[8192];
+    char full_reconstructed_message[4096] = "";
+    int frame_idx = 1;
+    while (fgets(line, sizeof(line), file)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        int L = strlen(line);
+        if (L < 48) continue; // Skip invalid or empty lines
+        char protocol_bits[17];
+        strncpy(protocol_bits, &line[24], 16);
+        protocol_bits[16] = '\0';
+        const char *protocol_name = "Unknown Protocol";
+        if (strcmp(protocol_bits, "0000000000000110") == 0) protocol_name = "TCP";
+        else if (strcmp(protocol_bits, "0000000000010001") == 0) protocol_name = "UDP";
+        else if (strcmp(protocol_bits, "0000100000000000") == 0) protocol_name = "IPv4";
+        else if (strcmp(protocol_bits, "1000011011011101") == 0) protocol_name = "IPv6";
+        else if (strcmp(protocol_bits, "1100000000100001") == 0) protocol_name = "LCP";
+        else if (strcmp(protocol_bits, "1000000000100001") == 0) protocol_name = "NCP";
+        int data_len = (L - 24) - 40;
+        char frame_text[512] = "";
+        int text_char_idx = 0;
+        int i,j;
+        if (data_len > 0) {
+            for (i = 40; i < (40 + data_len); i += 8) {
+                unsigned char ch = 0;
+                for (j = 0; j < 8; j++) {
+                    ch <<= 1;
+                    if (line[i + j] == '1') {
+                        ch |= 1;
+                    }
+                }
+                if (ch != '\0' && ch != '\n' && ch != '\r') {
+                    frame_text[text_char_idx++] = ch;
+                }
+            }
+        }
+        frame_text[text_char_idx] = '\0';
+        strcat(full_reconstructed_message, frame_text);
+        printf("Frame #%d:\n", frame_idx++);
+        printf("  Protocol: %s (%s)\n", protocol_name, protocol_bits);
+        printf("  Data:     \"%s\"\n\n", frame_text);
+    }
+    fclose(file);
+    printf("======================================================================\n");
+    printf("FINAL RECONSTRUCTED DATA MESSAGE:\n%s\n", full_reconstructed_message);
+    printf("======================================================================\n");
+}
+int main(){
+    destuffPPPFrames();
+    verifyDestuffedFramesChecksum();
+    displayDestuffedFrameDetails();
+    return 0;
+}
