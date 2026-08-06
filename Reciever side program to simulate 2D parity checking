@@ -1,0 +1,193 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main() {
+    FILE* infile = fopen("out2d", "r");
+    char line[4096];
+    
+    int max_rows = 1000;
+    int** matrix = NULL;
+    int num_rows = 0;
+    int segment_len = 0;
+    
+    int r, c, i, b;
+    int error_row = -1;
+    int error_col = -1;
+    int row_error_count = 0;
+    int col_error_count = 0;
+    
+    int data_rows, data_cols;
+    int total_data_bits;
+    int* clean_bits = NULL;
+    int bit_idx = 0;
+    
+    /* Variables for error simulation */
+    int num_errors_to_inject = 0;
+    int target_row, target_col, e;
+
+    if (!infile) {
+        perror("Error opening 'out2d' file. Please run the matrix generator first");
+        return 1;
+    }
+
+    /* Step 1: Read the file to discover matrix dimensions and allocate memory */
+    matrix = malloc(max_rows * sizeof(int*));
+    while (fgets(line, sizeof(line), infile)) {
+        int len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+            line[len - 1] = '\0';
+            len--;
+        }
+        
+        if (len == 0) continue; 
+
+        if (segment_len == 0) {
+            segment_len = len; 
+        }
+
+        matrix[num_rows] = malloc(segment_len * sizeof(int));
+        for (c = 0; c < segment_len; c++) {
+            matrix[num_rows][c] = line[c] - '0';
+        }
+        num_rows++;
+
+        if (num_rows >= max_rows) {
+            max_rows *= 2;
+            matrix = realloc(matrix, max_rows * sizeof(int*));
+        }
+    }
+    fclose(infile);
+
+    if (num_rows < 2 || segment_len < 2) {
+        printf("Error: Matrix inside 'out2d' is too small to evaluate.\n");
+        return 1;
+    }
+
+    printf("--- STEP 1: Matrix Loaded From File ---\n");
+    printf("Total block dimensions found: %d rows x %d columns\n", num_rows, segment_len);
+    printf("Valid coordinates for testing: Rows [1 to %d], Columns [1 to %d]\n\n", num_rows, segment_len);
+
+    /* --- ERROR SIMULATION OPTION --- */
+    printf("--- OPTIONAL STEP: Inject Simulation Errors ---\n");
+    printf("How many bits would you like to flip to simulate an error? (Enter 0 for none): ");
+    if (scanf("%d", &num_errors_to_inject) != 1) {
+        num_errors_to_inject = 0;
+    }
+
+    for (e = 0; e < num_errors_to_inject; e++) {
+        printf("  [Error %d/%d] Enter row and column numbers (separated by a space): ", e + 1, num_errors_to_inject);
+        if (scanf("%d %d", &target_row, &target_col) == 2) {
+            if (target_row >= 1 && target_row <= num_rows && target_col >= 1 && target_col <= segment_len) {
+                /* Flip the bit at user choice (convert 1-based input to 0-based index) */
+                matrix[target_row - 1][target_col - 1] ^= 1;
+                printf("  -> Successfully flipped bit at Row %d, Col %d to: %d\n", target_row, target_col, matrix[target_row - 1][target_col - 1]);
+            } else {
+                printf("  -> Error: Coordinates out of bounds! Skipping this input.\n");
+            }
+        } else {
+            printf("  -> Error: Invalid input format. Skipping.\n");
+            /* Clear input buffer */
+            while (getchar() != '\n'); 
+        }
+    }
+    printf("\n");
+
+    /* Step 2: Validate Horizontal Row Parity */
+    printf("--- STEP 2: Verifying Horizontal Row Parity ---\n");
+    for (r = 0; r < num_rows; r++) {
+        int row_xor_sum = 0;
+        for (c = 0; c < segment_len; c++) {
+            row_xor_sum ^= matrix[r][c];
+        }
+        
+        if (row_xor_sum != 0) {
+            printf("  [FAIL] Parity mismatch detected at Row %d\n", r + 1);
+            error_row = r;
+            row_error_count++;
+        }
+    }
+    if (row_error_count == 0) {
+        printf("  [PASS] All row parity configurations match cleanly.\n");
+    }
+
+    /* Step 3: Validate Vertical Column Parity */
+    printf("\n--- STEP 3: Verifying Vertical Column Parity ---\n");
+    for (c = 0; c < segment_len; c++) {
+        int col_xor_sum = 0;
+        for (r = 0; r < num_rows; r++) {
+            col_xor_sum ^= matrix[r][c];
+        }
+        
+        if (col_xor_sum != 0) {
+            printf("  [FAIL] Parity mismatch detected at Column %d\n", c + 1);
+            error_col = c;
+            col_error_count++;
+        }
+    }
+    if (col_error_count == 0) {
+        printf("  [PASS] All column parity configurations match cleanly.\n");
+    }
+
+    /* Step 4: Error Localization and Correction */
+    printf("\n--- STEP 4: Diagnosis & Error Correction ---\n");
+    if (row_error_count == 0 && col_error_count == 0) {
+        printf("Result: No transmission errors found in the data stream.\n");
+    } 
+    else if (row_error_count == 1 && col_error_count == 1) {
+        printf("Result: Single bit error isolated at Row %d, Column %d!\n", error_row + 1, error_col + 1);
+        printf("  Original value: %d\n", matrix[error_row][error_col]);
+        
+        /* Flip the bad bit back to correct it */
+        matrix[error_row][error_col] ^= 1; 
+        printf("  Corrected value: %d\n", matrix[error_row][error_col]);
+        printf("Data successfully repaired.\n");
+    } 
+    else {
+        printf("Warning: Multiple errors detected (%d row flags, %d col flags).\n", row_error_count, col_error_count);
+        printf("2D Parity can only uniquely pinpoint and fix a single-bit corruption point.\n");
+        printf("The text output step below may fail or look garbled due to uncorrectable multiple bit errors.\n");
+    }
+
+    /* Step 5: Strip Parity Fields and Reconstruct Message */
+    printf("\n--- STEP 5: Stripping Parity Elements ---\n");
+    data_rows = num_rows - 1;       
+    data_cols = segment_len - 1;    
+    total_data_bits = data_rows * data_cols;
+
+    printf("Extracted payload size: %d data bits (%d chunks x %d bits)\n", total_data_bits, data_rows, data_cols);
+
+    clean_bits = malloc(total_data_bits * sizeof(int));
+    bit_idx = 0;
+    
+    for (r = 0; r < data_rows; r++) {
+        for (c = 0; c < data_cols; c++) {
+            clean_bits[bit_idx++] = matrix[r][c];
+        }
+    }
+
+    /* Convert continuous clean bits back to character bytes (every 8 bits = 1 char) */
+    printf("\n--- STEP 6: Final Decoded Text Message ---\n");
+    printf("Message: \"");
+    
+    for (i = 0; i < total_data_bits - 7; i += 8) {
+        char character_byte = 0;
+        for (b = 0; b < 8; b++) {
+            character_byte |= (clean_bits[i + b] << (7 - b));
+        }
+        if (character_byte >= 32 || character_byte == '\n' || character_byte == '\r' || character_byte == '\t') {
+            printf("%c", character_byte);
+        }
+    }
+    printf("\"\n\n");
+
+    /* Dynamic memory cleanup allocations */
+    for (r = 0; r < num_rows; r++) {
+        free(matrix[r]);
+    }
+    free(matrix);
+    free(clean_bits);
+
+    return 0;
+}
+
