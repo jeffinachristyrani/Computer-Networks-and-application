@@ -1,0 +1,142 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Helper function to check if a number is a power of 2 */
+int is_power_of_two(int n) {
+    if (n <= 0) return 0;
+    return (n & (n - 1)) == 0;
+}
+
+int main() {
+    FILE* infile = fopen("output", "r");
+    if (!infile) {
+        perror("Error opening 'output' file. Please run the generator code first");
+        return 1;
+    }
+
+    /* Read the bit string from the file */
+    char bin_str[4096];
+    if (fscanf(infile, "%4095s", bin_str) != 1) {
+        printf("Error: 'output' file is empty or invalid.\n");
+        fclose(infile);
+        return 1;
+    }
+    fclose(infile);
+
+    int total_len = strlen(bin_str);
+    int* hamming_code = malloc(total_len * sizeof(int));
+    int i, j;
+
+    /* Parse file string into our 0-indexed internal array.
+       Because the file was written in reverse (leftmost char is the highest index),
+       we map bin_str[0] to hamming_code[total_len - 1] */
+    for (i = 0; i < total_len; i++) {
+        hamming_code[total_len - 1 - i] = bin_str[i] - '0';
+    }
+
+    printf("--- Initial Hamming Code loaded from file ---\n");
+    printf("Visual layout (Standard index 1 on the right):\n");
+    printf("Index:    ");
+    for (i = total_len; i >= 1; i--) printf("%-3d ", i);
+    printf("\nType:     ");
+    for (i = total_len; i >= 1; i--) {
+        if (is_power_of_two(i)) printf("P%-2d ", i);
+        else printf("D   ");
+    }
+    printf("\nValue:    ");
+    for (i = total_len; i >= 1; i--) printf("%-3d ", hamming_code[i - 1]);
+    printf("\n\n");
+
+    /* Step 1: Inject an optional error */
+    int error_pos;
+    printf("Enter a position to inject an error (1 to %d, or 0 for no error): ", total_len);
+    if (scanf("%d", &error_pos) != 1 || error_pos < 0 || error_pos > total_len) {
+        printf("Invalid position selected.\n");
+        free(hamming_code);
+        return 1;
+    }
+
+    if (error_pos > 0) {
+        /* Flip the target bit */
+        hamming_code[error_pos - 1] ^= 1;
+        printf("\n[ALERT] Flipped bit at position %d!\n", error_pos);
+        printf("New Corrupted Value: %d\n", hamming_code[error_pos - 1]);
+    } else {
+        printf("\nNo error injected. Evaluating clean code.\n");
+    }
+
+    /* Step 2: Calculate Parity Bits (Syndrome) */
+    printf("\n--- STEP 2: Re-evaluating Parity Bits (Even Parity Check) ---\n");
+    
+    /* Count how many parity bits are in this block length */
+    int r = 0;
+    while ((1 << r) <= total_len) {
+        r++;
+    }
+
+    int syndrome = 0;
+
+    /* Check each parity bit position */
+    for (i = 0; i < r; i++) {
+        int parity_pos = 1 << i;
+        int check_val = 0;
+
+        printf("Checking Parity P%d (at index %d):\n", parity_pos, parity_pos);
+        printf("  Forming check sequence: ");
+
+        for (j = 1; j <= total_len; j++) {
+            /* Check if this position is covered by the parity bit */
+            if (j & parity_pos) {
+                printf("%d(val:%d) ", j, hamming_code[j - 1]);
+                check_val ^= hamming_code[j - 1];
+            }
+        }
+
+        /* For even parity, the XOR sum of all covered positions (including P itself) must be 0 */
+        printf("\n  XOR Sum result for P%d = %d", parity_pos, check_val);
+        if (check_val != 0) {
+            printf(" -> [FAIL]");
+            /* Construct syndrome bit by bit (P1 is LSB, P4 is higher, etc.) */
+            syndrome |= parity_pos;
+        } else {
+            printf(" -> [PASS]");
+        }
+        printf("\n\n");
+    }
+
+    /* Step 3: Diagnostic and Error Correction */
+    printf("--- STEP 3: Error Diagnosis ---\n");
+    printf("Calculated Syndrome (Error Position Value): %d\n", syndrome);
+
+    if (syndrome == 0) {
+        printf("Result: No error detected in the transmission!\n");
+    } else if (syndrome > total_len) {
+        printf("Result: Multiple errors or corrupt data outside valid block boundaries.\n");
+    } else {
+        printf(" Result: Error detected at Position %d!\n", syndrome);
+        printf("Attempting correction...\n");
+        
+        printf("  Old value at position %d: %d\n", syndrome, hamming_code[syndrome - 1]);
+        hamming_code[syndrome - 1] ^= 1; /* Fix the bit */
+        printf("  Corrected value at position %d: %d\n", syndrome, hamming_code[syndrome - 1]);
+        
+        printf("Data successfully repaired.\n");
+    }
+
+    /* Print out the definitive corrected array block */
+    printf("\n--- Final Corrected Array Layout ---\n");
+    printf("Position:  ");
+    for (i = total_len; i >= 1; i--) {
+        if (is_power_of_two(i)) printf("P%-2d ", i);
+        else printf("D%-2d ", i);
+    }
+    printf("\nBit Value: ");
+    for (i = total_len; i >= 1; i--) {
+        printf("%-3d ", hamming_code[i - 1]);
+    }
+    printf("\n");
+
+    free(hamming_code);
+    return 0;
+}
