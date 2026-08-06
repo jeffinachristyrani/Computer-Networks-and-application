@@ -1,0 +1,83 @@
+#include <stdio.h>
+#include <string.h>
+
+void verify_line(char *line, int line_num) {
+    int len = strlen(line);
+    
+    // Clean up newline or carriage return characters
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+        line[len - 1] = '\0';
+        len--;
+    }
+    
+    int bit_index = 0;
+    int data_bits[7];
+    int block_count = 1;
+    int i;
+    for (i = 0; i < len; i++) {
+        // Skip any unexpected characters (like accidental spaces)
+        if (line[i] != '0' && line[i] != '1') {
+            continue;
+        }
+        
+        if (bit_index < 7) {
+            // Collect the 7 data bits
+            data_bits[bit_index] = line[i] - '0';
+            bit_index++;
+        } else {
+            // This is the 8th bit (the stored parity bit)
+            int stored_parity = line[i] - '0';
+            int b;
+            // Recalculate even parity from the 7 data bits
+            int ones_count = 0;
+            for (b = 0; b < 7; b++) {
+                if (data_bits[b] == 1) {
+                    ones_count++;
+                }
+            }
+            int calculated_parity = (ones_count % 2 != 0) ? 1 : 0;
+            
+            // Check if the calculated parity matches the stored 8th bit
+            if (calculated_parity == stored_parity) {
+                printf("[Line %d, Block %d]: MATCH (Data: ", line_num, block_count);
+                for (b = 0; b < 7; b++) printf("%d", data_bits[b]);
+                printf(" | Parity: %d)\n", stored_parity);
+            } else {
+                printf("[Line %d, Block %d]: ERROR! Mismatch found. (Calculated: %d, Stored: %d)\n", 
+                       line_num, block_count, calculated_parity, stored_parity);
+            }
+            
+            // Reset for the next 8-bit block
+            bit_index = 0;
+            block_count++;
+        }
+    }
+    
+    // Check if the line ended abruptly without an 8th bit
+    if (bit_index > 0) {
+        printf("[Line %d, Block %d]: ERROR! Incomplete block. Found only %d bits.\n", 
+               line_num, block_count, bit_index);
+    }
+}
+
+int main() {
+    FILE *fin = fopen("ppp_parity_output.txt", "r");
+    if (!fin) {
+        printf("Error: Could not open ppp_parity_output.txt\n");
+        return 1;
+    }
+    
+    char buffer[65536]; // Buffer size to support large streams per line
+    int line_num = 1;
+    
+    printf("Starting Parity Verification...\n\n");
+    
+    while (fgets(buffer, sizeof(buffer), fin)) {
+        verify_line(buffer, line_num);
+        line_num++;
+    }
+    
+    fclose(fin);
+    printf("\nVerification complete.\n");
+    return 0;
+}
