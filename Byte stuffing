@@ -1,0 +1,632 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct Node {
+    char url[100];
+    unsigned char ip[4];
+    char mac[18];
+};
+
+struct Node table[50];
+int nodeCount = 0;
+const int maxNodes = 50;
+
+void Bin(int num, char *binStr) {
+    int i;
+    for (i = 7; i >= 0; i--) {
+        binStr[7 - i] = (num & (1 << i)) ? '1' : '0';
+    }
+    binStr[8] = '\0';
+}
+
+void macToBin(const char *mac, char *binStr) {
+    binStr[0] = '\0';
+    int i;
+    for (i = 0; i < 17; i++) {
+        if (mac[i] == ':') {
+            strcat(binStr, " ");
+        } else {
+            char hex[2] = {mac[i], '\0'};
+            int val = (int)strtol(hex, NULL, 16);
+            char nibble[5];
+            int j;
+            for (j = 3; j >= 0; j--) {
+                nibble[3 - j] = (val & (1 << j)) ? '1' : '0';
+            }
+            nibble[4] = '\0';
+            strcat(binStr, nibble);
+        }
+    }
+}
+
+// Layer 1: Application Layer Simulator
+void printApplicationLayer(const char *message) {
+    printf("\n========================================================================\n");
+    printf(" LAYER 1 : APPLICATION LAYER\n");
+    printf("------------------------------------------------------------------------\n");
+    printf("  Message        : %s\n", message);
+    printf("  Binary Format  : ");
+    int i;
+    for (i = 0; message[i] != '\0'; i++) {
+        char binStr[9];
+        Bin((int)message[i], binStr);
+        printf("%s ", binStr);
+    }
+    printf("\n========================================================================\n");
+}
+
+// Layer 2: Transport Layer Simulator
+void printTransportLayer(const char *buffer, int totalLen, int packetBitSize) {
+    int charSize = packetBitSize / 8;
+    if (charSize < 1) charSize = 2;
+    int totalPackets = (totalLen + (charSize - 1)) / charSize;
+
+    printf("\n==============================================================\n");
+    printf(" LAYER 2 : TRANSPORT LAYER (SEGMENTATION)\n");
+    printf("==============================================================\n");
+    printf("  Segment Size Capacity : %d bits (%d characters per packet)\n", packetBitSize, charSize);
+    printf("  Total Segments Created: %d\n\n", totalPackets);
+
+    int i, j;
+    for (i = 0; i < totalPackets; i++) {
+        int byteStart = i * charSize;
+        printf("  [ Segment %d ]\n  Payload Data: ", i + 1);
+        for (j = 0; j < charSize; j++) {
+            if (byteStart + j < totalLen) {
+                printf("%c", buffer[byteStart + j]);
+            } else {
+                break;
+            }
+        }
+        printf("\n  Binary Value: ");
+        for (j = 0; j < charSize; j++) {
+            if (byteStart + j < totalLen) {
+                char binStr[9];
+                Bin((int)buffer[byteStart + j], binStr);
+                printf("%s ", binStr);
+            }
+        }
+        printf("\n\n");
+    }
+    printf("==============================================================\n");
+}
+
+// Layer 3: Network Layer Simulator
+void printNetworkLayer(int sIdx, int dIdx, const char *buffer, int totalLen, int packetBitSize) {
+    int charSize = packetBitSize / 8;
+    if (charSize < 1) charSize = 2;
+    int totalPackets = (totalLen + (charSize - 1)) / charSize;
+
+    char ipBinSrc[50], ipBinDest[50], tempIp[9];
+    ipBinSrc[0] = '\0'; ipBinDest[0] = '\0';
+    int i, j;
+    for(i = 0; i < 4; i++) {
+        Bin(table[sIdx].ip[i], tempIp); strcat(ipBinSrc, tempIp); if(i < 3) strcat(ipBinSrc, " ");
+        Bin(table[dIdx].ip[i], tempIp); strcat(ipBinDest, tempIp); if(i < 3) strcat(ipBinDest, " ");
+    }
+
+    printf("\n==============================================================\n");
+    printf(" LAYER 3 : NETWORK LAYER (PACKET ENCAPSULATION)\n");
+    printf("==============================================================\n");
+    printf("  Source IP      : %d.%d.%d.%d (%s)\n", table[sIdx].ip[0], table[sIdx].ip[1], table[sIdx].ip[2], table[sIdx].ip[3], ipBinSrc);
+    printf("  Destination IP : %d.%d.%d.%d (%s)\n", table[dIdx].ip[0], table[dIdx].ip[1], table[dIdx].ip[2], table[dIdx].ip[3], ipBinDest);
+    printf("--------------------------------------------------------------\n");
+
+    for (i = 0; i < totalPackets; i++) {
+        int byteStart = i * charSize;
+        printf("\n  [ Packet %d ]\n  Header -> Source IP: %s | Dest IP: %s\n  Payload: ", i + 1, ipBinSrc, ipBinDest);
+        for (j = 0; j < charSize; j++) {
+            if (byteStart + j < totalLen) {
+                printf("%c", buffer[byteStart + j]);
+            }
+        }
+        printf("\n  Binary Segment Payload: ");
+        for (j = 0; j < charSize; j++) {
+            if (byteStart + j < totalLen) {
+                char binStr[9];
+                Bin((int)buffer[byteStart + j], binStr);
+                printf("%s ", binStr);
+            }
+        }
+        printf("\n");
+    }
+    printf("==============================================================\n");
+}
+
+int printDataLinkLabelAndPPP(int sIdx, int dIdx, const char *buffer, int totalLen, int packetBitSize, int framePayloadBitSize) {
+    FILE *fp = fopen("byte.txt", "w");
+
+    int i, b;
+    int charSize = packetBitSize / 8;
+    if (charSize < 1) charSize = 2;
+
+    int totalPackets = (totalLen + (charSize - 1)) / charSize;
+    int grandTotalFrames = 0;
+
+    char srcMacBin[100], destMacBin[100];
+    char ipBinSrc[50], ipBinDest[50], tempIp[9];
+
+    macToBin(table[sIdx].mac, srcMacBin);
+    macToBin(table[dIdx].mac, destMacBin);
+
+    ipBinSrc[0] = '\0'; ipBinDest[0] = '\0';
+    for(i = 0; i < 4; i++) {
+        Bin(table[sIdx].ip[i], tempIp); strcat(ipBinSrc, tempIp); if(i < 3) strcat(ipBinSrc, " ");
+        Bin(table[dIdx].ip[i], tempIp); strcat(ipBinDest, tempIp); if(i < 3) strcat(ipBinDest, " ");
+    }
+
+    printf("\n==============================================================\n");
+    printf(" LAYER 4 : DATA LINK LAYER (FRAMING PROCESS)\n");
+    printf("==============================================================\n");
+    if (fp) {
+        fprintf(fp, "\n==============================================================\n");
+        fprintf(fp, " LAYER 4 : DATA LINK LAYER (FRAMING PROCESS)\n");
+        fprintf(fp, "==============================================================\n");
+    }
+
+    int currentFrameNum = 1;
+    int pIdx;
+    int fNumInPacket;
+    for (pIdx = 0; pIdx < totalPackets; pIdx++) {
+        int byteStart = pIdx * charSize;
+        int bytesInThisPacket = (byteStart + charSize > totalLen) ? (totalLen - byteStart) : charSize;
+        int bitsAvailableInPacket = bytesInThisPacket * 8;
+
+        int framesNeededForPacket = (bitsAvailableInPacket + (framePayloadBitSize - 1)) / framePayloadBitSize;
+
+        printf("\n--------------------------------------------------------------\n");
+        printf(" >>> PACKET %d (Contains %d Bits) <<<\n", pIdx + 1, bitsAvailableInPacket);
+        printf("--------------------------------------------------------------\n");
+        if (fp) {
+            fprintf(fp, "\n--------------------------------------------------------------\n");
+            fprintf(fp, " >>> PACKET %d (Contains %d Bits) <<<\n", pIdx + 1, bitsAvailableInPacket);
+            fprintf(fp, "--------------------------------------------------------------\n");
+        }
+
+        for (fNumInPacket = 1; fNumInPacket <= framesNeededForPacket; fNumInPacket++) {
+            int bitOffsetStart = (fNumInPacket - 1) * framePayloadBitSize;
+            int payloadBits = framePayloadBitSize;
+
+            if (bitOffsetStart + payloadBits > bitsAvailableInPacket) {
+                payloadBits = bitsAvailableInPacket - bitOffsetStart;
+            }
+            int paddingBits = framePayloadBitSize - payloadBits;
+
+            char payloadString[128];
+            for (b = 0; b < payloadBits; b++) {
+                int relativeBitPos = bitOffsetStart + b;
+                int charOffset = relativeBitPos / 8;
+                int bitShift = 7 - (relativeBitPos % 8);
+                int bitVal = (buffer[byteStart + charOffset] >> bitShift) & 1;
+                payloadString[b] = bitVal ? '1' : '0';
+            }
+            payloadString[payloadBits] = '\0';
+
+            printf("\n  [ Frame %d ]\n", currentFrameNum);
+            printf("  Source MAC      : %s\n", table[sIdx].mac);
+            printf("  Destination MAC : %s\n", table[dIdx].mac);
+            printf("  Payload Bits    : %d\n", payloadBits);
+
+            if (fp) {
+                fprintf(fp, "\n  [ Frame %d ]\n", currentFrameNum);
+                fprintf(fp, "  Source MAC      : %s\n", table[sIdx].mac);
+                fprintf(fp, "  Destination MAC : %s\n", table[dIdx].mac);
+                fprintf(fp, "  Payload Bits    : %d\n", payloadBits);
+            }
+
+            printf("  Payload Text    : ");
+            if (fp) fprintf(fp, "  Payload Text    : ");
+            for (b = 0; b < payloadBits; b++) {
+                printf("%c", payloadString[b]);
+                if (fp) fprintf(fp, "%c", payloadString[b]);
+                if ((b + 1) % 8 == 0 && (b + 1) < payloadBits) {
+                    printf(" ");
+                    if (fp) fprintf(fp, " ");
+                }
+            }
+            printf("\n");
+            if (fp) fprintf(fp, "\n");
+
+            printf("  Padding Bits    : %d\n", paddingBits);
+            if (fp) fprintf(fp, "  Padding Bits    : %d\n", paddingBits);
+
+            if (paddingBits > 0) {
+                printf("  Padding Content : ");
+                if (fp) fprintf(fp, "  Padding Content : ");
+                for(b = 0; b < paddingBits; b++) {
+                    printf("0");
+                    if (fp) fprintf(fp, "0");
+                    if ((b + 1) % 8 == 0 && (b + 1) < paddingBits) {
+                        printf(" ");
+                        if (fp) fprintf(fp, " ");
+                    }
+                }
+                printf("\n");
+                if (fp) fprintf(fp, "\n");
+            }
+            printf("  Error Control   : 00000000\n");
+            if (fp) fprintf(fp, "  Error Control   : 00000000\n");
+
+            currentFrameNum++;
+            grandTotalFrames++;
+        }
+    }
+
+    const unsigned char FLAG_BYTE = 0x7E;
+    const unsigned char ESC_BYTE  = 0x7D;
+
+    unsigned char originalData[1024];
+    unsigned char stuffedData[2048];
+    unsigned char destuffedData[1024];
+    char decodedText[1024];
+
+    int origLen = 0, stuffedLen = 0, destuffedLen = 0;
+
+    unsigned char macSrcBytes[] = {0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33};
+    unsigned char macDstBytes[] = {0xAA, 0xEE, 0xCC, 0x56, 0x67, 0x33};
+    for(i = 0; i < 6; i++) originalData[origLen++] = macSrcBytes[i];
+    for(i = 0; i < 6; i++) originalData[origLen++] = macDstBytes[i];
+    for(i = 0; i < 4; i++) originalData[origLen++] = (unsigned char)table[sIdx].ip[i];
+    for(i = 0; i < 4; i++) originalData[origLen++] = (unsigned char)table[dIdx].ip[i];
+
+    int payloadStartOffset = origLen;
+    for(i = 0; i < totalLen; i++) {
+        originalData[origLen++] = (unsigned char)buffer[i];
+    }
+    originalData[origLen++] = 0x00;
+
+    int stuffedFlags[2048] = {0};
+    for (i = 0; i < origLen; i++) {
+        if (originalData[i] == FLAG_BYTE) {
+            stuffedFlags[stuffedLen] = 1;
+            stuffedData[stuffedLen++] = ESC_BYTE;
+            stuffedFlags[stuffedLen] = 2;
+            stuffedData[stuffedLen++] = FLAG_BYTE;
+        } else if (originalData[i] == ESC_BYTE) {
+            stuffedFlags[stuffedLen] = 1;
+            stuffedData[stuffedLen++] = ESC_BYTE;
+            stuffedFlags[stuffedLen] = 3;
+            stuffedData[stuffedLen++] = ESC_BYTE;
+        } else {
+            stuffedFlags[stuffedLen] = 0;
+            stuffedData[stuffedLen++] = originalData[i];
+        }
+    }
+
+    int destuffedFlags[1024] = {0};
+    for (i = 0; i < stuffedLen; i++) {
+        if (stuffedData[i] == ESC_BYTE) {
+            i++; // Skip the escape token
+            unsigned char literalByte = stuffedData[i];
+            if (literalByte == FLAG_BYTE) destuffedFlags[destuffedLen] = 1;
+            else if (literalByte == ESC_BYTE) destuffedFlags[destuffedLen] = 2;
+            destuffedData[destuffedLen++] = literalByte;
+        } else {
+            destuffedFlags[destuffedLen] = 0;
+            destuffedData[destuffedLen++] = stuffedData[i];
+        }
+    }
+
+    int txtIdx = 0;
+    for (i = payloadStartOffset; i < destuffedLen - 1; i++) {
+        decodedText[txtIdx++] = (char)destuffedData[i];
+    }
+    decodedText[txtIdx] = '\0';
+    int choice;
+    char protocol_str[50] = "";
+
+    // 1. Display Menu to the User
+    printf("========================================================\n");
+    printf("                PPP PROTOCOL SELECTION MENU             \n");
+    printf("========================================================\n");
+    printf("1. Link Control Protocol (LCP)     [11000000 00100001]\n");
+    printf("2. Password Authentication (PAP)   [11000010 00100001]\n");
+    printf("3. Challenge Handshake (CHAP)      [11000010 00100011]\n");
+    printf("4. Internet Protocol v4 (IPv4)     [00000000 00100001]\n");
+    printf("5. Internet Protocol v6 (IPv6)     [00000000 01010111]\n");
+    printf("========================================================\n");
+    printf("Enter your choice (1-5): ");
+    
+    if (scanf("%d", &choice) != 1) {
+        choice = 2; // Default fallback if input fails
+    }
+
+    // 2. Process User Choice
+    switch(choice) {
+        case 1:
+            snprintf(protocol_str, sizeof(protocol_str), "11000000 00100001 (LCP)");
+            break;
+        case 2:
+            snprintf(protocol_str, sizeof(protocol_str), "11000010 00100001 (PAP)");
+            break;
+        case 3:
+            snprintf(protocol_str, sizeof(protocol_str), "11000010 00100011 (CHAP)");
+            break;
+        case 4:
+            snprintf(protocol_str, sizeof(protocol_str), "00000000 00100001 (IPv4)");
+            break;
+        case 5:
+            snprintf(protocol_str, sizeof(protocol_str), "00000000 01010111 (IPv6)");
+            break;
+        default:
+            printf("Invalid choice! Defaulting to PAP.\n");
+            snprintf(protocol_str, sizeof(protocol_str), "11000010 00100001 (PAP)");
+            break;
+    }
+
+    printf("\n");
+
+    printf("\n========================================================\n");
+    printf("                 PPP FRAME FORMAT (SENDER)\n");
+    printf("========================================================\n\n");
+    printf("Flag\n-----\n01111110\n\n");
+    printf("Address\n-------\n11111111\n\n");
+    printf("Control\n-------\n00000011\n\n");
+    printf("Protocol\n--------\n%s\n\n",protocol_str);
+    printf("Information (Data)\n-------------------\n");
+
+    if (fp) {
+        fprintf(fp, "\n========================================================\n");
+        fprintf(fp, "                 PPP FRAME FORMAT (SENDER)\n");
+        fprintf(fp, "========================================================\n\n");
+        fprintf(fp, "Flag\n-----\n01111110\n\n");
+        fprintf(fp, "Address\n-------\n11111111\n\n");
+        fprintf(fp, "Control\n-------\n00000011\n\n");
+        fprintf(fp, "Protocol\n--------\n%s\n\n",protocol_str);
+        fprintf(fp, "Information (Data)\n-------------------\n");
+    }
+
+    for (i = 0; i < stuffedLen; i++) {
+        char binStr[9];
+        Bin((int)stuffedData[i], binStr);
+
+        if (stuffedFlags[i] == 1) {
+            printf("%s", binStr);
+            if (fp) fprintf(fp, "%s", binStr);
+        } else if (stuffedFlags[i] == 2) {
+            printf("%s", binStr);
+            if (fp) fprintf(fp, "%s", binStr);
+        } else if (stuffedFlags[i] == 3) {
+            printf("%s", binStr);
+            if (fp) fprintf(fp, "%s", binStr);
+        } else {
+            printf("%s", binStr);
+            if (fp) fprintf(fp, "%s", binStr);
+        }
+
+        if (i < stuffedLen - 1) {
+            printf(" ");
+            if (fp) fprintf(fp, " ");
+        }
+    }
+    printf("\n\nFCS\n---\n0000000000000000\n\nFlag\n-----\n01111110\n");
+    if (fp) fprintf(fp, "\n\nFCS\n---\n0000000000000000\n\nFlag\n-----\n01111110\n");
+
+    printf("\n========================================================\n");
+    printf("          PPP FRAME DE-FORMAT (RECEIVER)\n");
+    printf("========================================================\n\n");
+    printf("Flag\n-----\n01111110\n\n");
+    printf("Address\n-------\n11111111\n\n");
+    printf("Control\n-------\n00000011\n\n");
+    printf("Protocol\n--------\n11000010 00100001\n\n");
+    printf("Information (Data)\n-------------------\n");
+
+    if (fp) {
+        fprintf(fp, "\n========================================================\n");
+        fprintf(fp, "          PPP FRAME DE-FORMAT (RECEIVER)\n");
+        fprintf(fp, "========================================================\n\n");
+        fprintf(fp, "Flag\n-----\n01111110\n\n");
+        fprintf(fp, "Address\n-------\n11111111\n\n");
+        fprintf(fp, "Control\n-------\n00000011\n\n");
+        fprintf(fp, "Protocol\n--------\n11000010 00100001\n\n");
+        fprintf(fp, "Information (Data)\n-------------------\n");
+    }
+
+    for (i = 0; i < destuffedLen; i++) {
+        char binStr[9];
+        Bin((int)destuffedData[i], binStr);
+
+        if (destuffedFlags[i] == 1 || destuffedFlags[i] == 2) {
+            printf("%s(DE-STUFFED)", binStr);
+            if (fp) fprintf(fp, "%s(DE-STUFFED)", binStr);
+        } else {
+            printf("%s", binStr);
+            if (fp) fprintf(fp, "%s", binStr);
+        }
+
+        if (i < destuffedLen - 1) {
+            printf(" ");
+            if (fp) fprintf(fp, " ");
+        }
+    }
+    printf("\n\nFCS\n---\n0000000000000000\n\nFlag\n-----\n01111110\n");
+    if (fp) fprintf(fp, "\n\nFCS\n---\n0000000000000000\n\nFlag\n-----\n01111110\n");
+
+    printf("\n========================================================\n");
+    printf("                FINAL DESTUFFED MESSAGE\n");
+    printf("========================================================\n");
+    printf("Decoded String Message payload : %s\n", decodedText);
+    printf("========================================================\n");
+
+    if (fp) {
+        fprintf(fp, "\n========================================================\n");
+        fprintf(fp, "                FINAL DESTUFFED MESSAGE\n");
+        fprintf(fp, "========================================================\n");
+        fprintf(fp, "Decoded String Message payload : %s\n", decodedText);
+        fprintf(fp, "========================================================\n");
+    }
+
+    if (fp) fclose(fp);
+    return grandTotalFrames;
+}
+
+// Default system setup entries
+void initNetworkTable() {
+    nodeCount = 0;
+
+    // Node 1
+    strcpy(table[nodeCount].url, "client.lan");
+    table[nodeCount].ip[0] = 192; table[nodeCount].ip[1] = 168; table[nodeCount].ip[2] = 1; table[nodeCount].ip[3] = 10;
+    strcpy(table[nodeCount].mac, "AA:BB:CC:11:22:33");
+    nodeCount++;
+
+    // Node 2
+    strcpy(table[nodeCount].url, "google.com");
+    table[nodeCount].ip[0] = 8; table[nodeCount].ip[1] = 8; table[nodeCount].ip[2] = 8; table[nodeCount].ip[3] = 8;
+    strcpy(table[nodeCount].mac, "AA:EE:CC:56:67:33");
+    nodeCount++;
+}
+
+void printNetworkTable() {
+    printf("\n--- CURRENT ARP/DNS ROUTING TABLE ---\n");
+    printf("%-20s %-16s %-18s\n", "Host Domain/URL", "IP Address", "MAC Address");
+    printf("-----------------------------------------------------------------\n");
+    int i;
+    for (i = 0; i < nodeCount; i++) {
+        printf("%-20s %d.%d.%d.%d\t  %-18s\n",
+               table[i].url,
+               table[i].ip[0], table[i].ip[1], table[i].ip[2], table[i].ip[3],
+               table[i].mac);
+    }
+    printf("-----------------------------------------------------------------\n");
+}
+
+void addNode() {
+    if (nodeCount >= maxNodes) {
+        printf("Network routing table capacity reached!\n");
+        return;
+    }
+    struct Node n;
+    int ipParts[4];
+    printf("\nEnter URL/Domain name (e.g. yahoo.com): ");
+    scanf("%99s", n.url);
+    printf("Enter IP Address (e.g. 192.168.1.1): ");
+    if (scanf("%d.%d.%d.%d", &ipParts[0], &ipParts[1], &ipParts[2], &ipParts[3]) != 4) {
+        printf("Invalid IP Format.\n");
+        return;
+    }
+    n.ip[0] = ipParts[0]; n.ip[1] = ipParts[1]; n.ip[2] = ipParts[2]; n.ip[3] = ipParts[3];
+    printf("Enter MAC Address (e.g. AA:BB:CC:DD:EE:FF): ");
+    scanf("%17s", n.mac);
+
+    table[nodeCount++] = n;
+    printf("Node successfully written to local cache map!\n");
+}
+
+void deleteNode() {
+    char target[100];
+    printf("\nEnter Domain/URL to remove from routing: ");
+    scanf("%99s", target);
+
+    int i, foundIdx = -1;
+    for (i = 0; i < nodeCount; i++) {
+        if (strcmp(table[i].url, target) == 0) {
+            foundIdx = i;
+            break;
+        }
+    }
+
+    if (foundIdx == -1) {
+        printf("Record routing key target error: domain not found.\n");
+        return;
+    }
+
+    for (i = foundIdx; i < nodeCount - 1; i++) {
+        table[i] = table[i + 1];
+    }
+    nodeCount--;
+    printf("Domain target successfully pruned from map storage!\n");
+}
+
+void handleFramingStream() {
+    char src[100], dest[100], filename[100];
+    int packetSize = 32, framePayloadSize = 10;
+
+    printf("\n--- FRAME CONFIGURATION WINDOW ---\n");
+    printf("Source URL : ");
+    scanf("%99s", src);
+    printf("Destination URL : ");
+    scanf("%99s", dest);
+    printf("Packet Bit Size (e.g. 32 bits = 4 chars) : ");
+    scanf("%d", &packetSize);
+    printf("Frame Bit Size (e.g. 10 bits) : ");
+    scanf("%d", &framePayloadSize);
+    printf("Source File Name (containing text to process) : ");
+    scanf("%99s", filename);
+
+    int sIdx = -1, dIdx = -1;
+    int i;
+    for (i = 0; i < nodeCount; i++) {
+        if (strcmp(table[i].url, src) == 0) sIdx = i;
+        if (strcmp(table[i].url, dest) == 0) dIdx = i;
+    }
+
+    if (sIdx == -1 || dIdx == -1) {
+        printf("\nError: Domain entities not recognized in current Network table. Please add them first.\n");
+        return;
+    }
+
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        printf("Error: File '%s' not found!\n", filename);
+        return;
+    }
+
+    char buffer[1024];
+    if (fgets(buffer, sizeof(buffer), file) == NULL) {
+        printf("Error reading content or empty target file.\n");
+        fclose(file);
+        return;
+    }
+    fclose(file);
+
+    buffer[strcspn(buffer, "\r\n")] = 0;
+    int dataLen = strlen(buffer);
+
+    printApplicationLayer(buffer);
+    printTransportLayer(buffer, dataLen, packetSize);
+    printNetworkLayer(sIdx, dIdx, buffer, dataLen, packetSize);
+
+    int totalFrames = printDataLinkLabelAndPPP(sIdx, dIdx, buffer, dataLen, packetSize, framePayloadSize);
+
+    printf("\nProcess complete. Outgoing Data Packet elements formatted & processed.\n");
+    printf("Total framed payload elements generated: %d\n", totalFrames);
+    printf("Details captured successfully and saved to 'byte.txt'\n");
+}
+
+int main() {
+    initNetworkTable();
+    int choice = 0;
+
+    while (1) {
+        printf("\n=================== NETWORK TOOL MENU ===================\n");
+        printf(" 1. Add Network Node\n");
+        printf(" 2. Delete Network Node\n");
+        printf(" 3. Generate & Stream Frame\n");
+        printf(" 4. View Network Table\n");
+        printf(" 5. Exit Program\n");
+        printf("---------------------------------------------------------\n");
+        printf("Enter your choice (1-5): ");
+        if (scanf("%d", &choice) != 1) {
+            printf("Invalid input.\n");
+            break;
+        }
+
+        if (choice == 1) {
+            addNode();
+        } else if (choice == 2) {
+            deleteNode();
+        } else if (choice == 3) {
+            handleFramingStream();
+        } else if (choice == 4) {
+            printNetworkTable();
+        } else if (choice == 5) {
+            printf("Exiting Network Framer Tool.\n");
+            break;
+        } else {
+            printf("Invalid selection.\n");
+        }
+    }
+    return 0;
+}
