@@ -1,0 +1,186 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int* text_to_bits(const char* text, int text_len, int* out_bit_count) {
+    int* bits = malloc(text_len * 8 * sizeof(int));
+    int bit_index = 0;
+    int i, b;
+    
+    if (!bits) return NULL;
+    
+    for (i = 0; i < text_len; i++) {
+        char c = text[i];
+        /* Extract bits from Most Significant Bit (MSB) to Least Significant Bit (LSB) */
+        for (b = 7; b >= 0; b--) {
+            bits[bit_index++] = (c >> b) & 1;
+        }
+    }
+    *out_bit_count = bit_index;
+    return bits;
+}
+
+int main() {
+    FILE* infile = fopen("input.txt", "rb");
+    long filesize;
+    char* raw_buffer = NULL;
+    char* clean_buffer = NULL;
+    long read_bytes;
+    long clean_bytes = 0;
+    int total_bits = 0;
+    int* data_bits = NULL;
+    
+    int segment_len;
+    int num_rows;
+    int** matrix = NULL;
+    
+    int r, c, i, bit_idx;
+    FILE* outfile = NULL;
+
+    if (!infile) {
+        perror("Error opening input.txt. Please create this file first");
+        return 1;
+    }
+
+    /* Find file size */
+    fseek(infile, 0, SEEK_END);
+    filesize = ftell(infile);
+    fseek(infile, 0, SEEK_SET);
+
+    if (filesize <= 0) {
+        printf("Error: input.txt is empty.\n");
+        fclose(infile);
+        return 1;
+    }
+
+    raw_buffer = malloc(filesize + 1);
+    read_bytes = fread(raw_buffer, 1, filesize, infile);
+    raw_buffer[read_bytes] = '\0';
+    fclose(infile);
+
+    clean_buffer = malloc(filesize + 1);
+
+    for (i = 0; i < read_bytes; i++) {
+        /* Ignore both Line Feed (\n) and Carriage Return (\r) windows characters */
+        if (raw_buffer[i] != '\n' && raw_buffer[i] != '\r') {
+            clean_buffer[clean_bytes++] = raw_buffer[i];
+        }
+    }
+    clean_buffer[clean_bytes] = '\0';
+    free(raw_buffer); /* Free the unfiltered memory buffer */
+
+    data_bits = text_to_bits(clean_buffer, clean_bytes, &total_bits);
+    free(clean_buffer);
+
+    printf("--- STEP 1: Text to Binary Conversion (Newlines Ignored) ---\n");
+    printf("Raw characters read: %ld\n", read_bytes);
+    printf("Clean characters kept (no newlines): %ld\n", clean_bytes);
+    printf("Total binary stream length: %d bits.\n\n", total_bits);
+
+    printf("Enter the row segment length (number of data columns): ");
+    if (scanf("%d", &segment_len) != 1 || segment_len <= 0) {
+        printf("Invalid segment length.\n");
+        free(data_bits);
+        return 1;
+    }
+
+    num_rows = total_bits / segment_len;
+    if (total_bits % segment_len != 0) {
+        num_rows++; /* Add an extra row for incomplete leftover bits */
+    }
+
+    printf("\n--- STEP 2: Allocating 2D Matrix Grid ---\n");
+    printf("Data dimensions: %d rows x %d columns\n", num_rows, segment_len);
+    printf("Parity block addition will expand this to: %d rows x %d columns\n\n", num_rows + 1, segment_len + 1);
+
+    /* Allocate dynamic 2D grid matrix: (num_rows + 1) by (segment_len + 1) */
+    matrix = malloc((num_rows + 1) * sizeof(int*));
+    for (i = 0; i <= num_rows; i++) {
+        matrix[i] = calloc((segment_len + 1), sizeof(int));
+    }
+
+    printf("--- STEP 3: Populating Grid & Adding Padding ---\n");
+    bit_idx = 0;
+    for (r = 0; r < num_rows; r++) {
+        printf("Row %2d data chunk: ", r + 1);
+        for (c = 0; c < segment_len; c++) {
+            if (bit_idx < total_bits) {
+                matrix[r][c] = data_bits[bit_idx++];
+                printf("%d", matrix[r][c]);
+            } else {
+                matrix[r][c] = 0; /* Pad right end with trailing 0s */
+                printf("%d[PAD]", matrix[r][c]);
+            }
+        }
+        printf("\n");
+    }
+    free(data_bits);
+
+    /* Step 4: Compute Row Parity */
+    printf("\n--- STEP 4: Computing Row Parity (Horizontal) ---\n");
+    for (r = 0; r < num_rows; r++) {
+        int row_xor_sum = 0;
+        for (c = 0; c < segment_len; c++) {
+            row_xor_sum ^= matrix[r][c];
+        }
+        matrix[r][segment_len] = row_xor_sum;
+        printf("Row %2d Parity Bit -> %d\n", r + 1, row_xor_sum);
+    }
+
+    /* Step 5: Compute Column Parity (including the newly generated row parity column) */
+    printf("\n--- STEP 5: Computing Column Parity (Vertical) ---\n");
+    for (c = 0; c <= segment_len; c++) {
+        int col_xor_sum = 0;
+        for (r = 0; r < num_rows; r++) {
+            col_xor_sum ^= matrix[r][c];
+        }
+        matrix[num_rows][c] = col_xor_sum;
+        if (c < segment_len) {
+            printf("Col %2d Parity Bit -> %d\n", c + 1, col_xor_sum);
+        } else {
+            printf("Intersection (Row Parity Col) Parity Bit -> %d\n", col_xor_sum);
+        }
+    }
+
+    /* Print out visualization to terminal console */
+    printf("\n--- STEP 6: Full 2D Parity Matrix Visualization ---\n");
+    for (r = 0; r <= num_rows; r++) {
+        if (r == num_rows) {
+            for (i = 0; i < segment_len; i++) printf("==");
+            printf("+==\n");
+        }
+        
+        for (c = 0; c <= segment_len; c++) {
+            if (c == segment_len) printf("| "); 
+            printf("%d ", matrix[r][c]);
+        }
+        
+        if (r == num_rows) printf(" <-- (Column Parity Row)");
+        printf("\n");
+    }
+
+    /* Step 7: Write full matrix block configurations into out2d file */
+    outfile = fopen("out2d", "w");
+    if (!outfile) {
+        perror("Error opening output file 'out2d'");
+        for (i = 0; i <= num_rows; i++) free(matrix[i]);
+        free(matrix);
+        return 1;
+    }
+
+    for (r = 0; r <= num_rows; r++) {
+        for (c = 0; c <= segment_len; c++) {
+            fprintf(outfile, "%d", matrix[r][c]);
+        }
+        fprintf(outfile, "\n"); 
+    }
+    fclose(outfile);
+
+
+    for (i = 0; i <= num_rows; i++) {
+        free(matrix[i]);
+    }
+    free(matrix);
+    return 0;
+}
+
