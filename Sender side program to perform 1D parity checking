@@ -1,0 +1,77 @@
+#include <stdio.h>
+#include <string.h>
+void process_line(char *line, FILE *out) {
+    int len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+        line[len - 1] = '\0';
+        len--;
+    }
+    if (len <= 40 + 24) {
+        return; 
+    }
+    int start = 40;
+    int end = len - 24; // exclusive of last 24 bits
+    int current_byte = 0;
+    int bit_count = 0;
+    int i;
+    for (i = start; i < end; i++) {
+        int bit = (line[i] == '1') ? 1 : 0;
+        current_byte = (current_byte << 1) | bit;
+        bit_count++;
+        if (bit_count == 7) {
+            int ones = 0;
+	    int b;
+            for (b = 0; b < 7; b++) {
+                if ((current_byte >> b) & 1) {
+                    ones++;
+                }
+            }
+            int parity_bit = (ones % 2 != 0) ? 1 : 0;
+            for (b = 6; b >= 0; b--) {
+                fprintf(out, "%d", (current_byte >> b) & 1);
+            }
+            fprintf(out, "%d", parity_bit);
+            current_byte = 0;
+            bit_count = 0;
+        }
+    }
+    if (bit_count > 0) {
+        int bits_needed = 7 - bit_count;
+        current_byte = current_byte << bits_needed;
+        int ones = 0;
+	int b;
+        for (b = 0; b < 7; b++) {
+            if ((current_byte >> b) & 1) {
+                ones++;
+            }
+        }
+        int parity_bit = (ones % 2 != 0) ? 1 : 0;
+        for (b = 6; b >= 0; b--) {
+            fprintf(out, "%d", (current_byte >> b) & 1);
+        }
+        fprintf(out, "%d", parity_bit);
+    }
+    fprintf(out, "\n");
+}
+int main() {
+    FILE *fin = fopen("ppp_destuffed_output.txt", "r");
+    if (!fin) {
+        printf("Error opening input file.\n");
+        return 1;
+    }
+    FILE *fout = fopen("ppp_parity_output.txt", "w");
+    if (!fout) {
+        printf("Error opening output file.\n");
+        fclose(fin);
+        return 1;
+    }
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), fin)) {
+        process_line(buffer, fout);
+    }
+    fclose(fin);
+    fclose(fout);
+    printf("Done. Readable bit stream written to ppp_parity_output.txt\n");
+    return 0;
+}
+
