@@ -1,0 +1,26 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+int findLonely(int arr_count, int* arr) {
+    int result = 0;
+    for (int i = 0; i < arr_count; i++) {
+        result ^= arr[i];
+    }
+    return result;
+}
+
+int main() {
+    int n;
+    if (scanf("%d", &n) != 1) return 1;
+
+    int* arr = (int*)malloc(n * sizeof(int));
+    for (int i = 0; i < n; i++) {
+        if (scanf("%d", &arr[i]) != 1) return 1;
+    }
+
+    int unique_element = findLonely(n, arr);
+    printf("%d\n", unique_element);
+
+    free(arr);
+    return 0;
+}
