@@ -1,0 +1,278 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define INF 999999
+#define MAX_NAME_LEN 50
+
+typedef struct {
+    int source;
+    int destination;
+    int weight;
+} Edge;
+
+typedef struct {
+    Edge* data;
+    int capacity;
+    int size;
+} MinHeap;
+
+typedef struct {
+    char name[MAX_NAME_LEN];
+    int id;
+} VertexMap;
+
+MinHeap* createHeap(int capacity) {
+    MinHeap* heap = (MinHeap*)malloc(sizeof(MinHeap));
+    heap->capacity = capacity;
+    heap->size = 0;
+    heap->data = (Edge*)malloc(capacity * sizeof(Edge));
+    return heap;
+}
+
+void swap(Edge* a, Edge* b) {
+    Edge temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+void heapifyUp(MinHeap* heap, int index) {
+    int parent;
+    while (index > 0) {
+        parent = (index - 1) / 2;
+        if (heap->data[index].weight < heap->data[parent].weight) {
+            swap(&heap->data[index], &heap->data[parent]);
+            index = parent;
+        } else {
+            break;
+        }
+    }
+}
+
+void insertHeap(MinHeap* heap, Edge edge) {
+    if (heap->size >= heap->capacity) return;
+    heap->data[heap->size] = edge;
+    heapifyUp(heap, heap->size);
+    heap->size++;
+}
+
+Edge extractMin(MinHeap* heap) {
+    Edge root;
+    if (heap->size <= 0) {
+        Edge empty = {-1, -1, -1};
+        return empty;
+    }
+    root = heap->data[0];
+    heap->size--;
+    if (heap->size > 0) {
+        int index = 0;
+        int leftChild, rightChild, smallest;
+        heap->data[0] = heap->data[heap->size];
+        while (2 * index + 1 < heap->size) {
+            leftChild = 2 * index + 1;
+            rightChild = 2 * index + 2;
+            smallest = leftChild;
+            if (rightChild < heap->size && heap->data[rightChild].weight < heap->data[leftChild].weight) {
+                smallest = rightChild;
+            }
+            if (heap->data[index].weight > heap->data[smallest].weight) {
+                swap(&heap->data[index], &heap->data[smallest]);
+                index = smallest;
+            } else {
+                break;
+            }
+        }
+    }
+    return root;
+}
+
+int findVertexId(VertexMap map[], int numVertices, const char* name) {
+   int i;
+   for (i = 0; i < numVertices; i++) {
+        if (strcmp(map[i].name, name) == 0) {
+            return map[i].id;
+        }
+    }
+    return -1;
+}
+
+void printPath(int current, int parent[], int startNode, VertexMap map[]) {
+    if (current == startNode) {
+        printf("%s", map[startNode].name);
+        return;
+    }
+    if (parent[current] == -1) {
+        printf("No Path");
+        return;
+    }
+    printPath(parent[current], parent, startNode, map);
+    printf(" -> %s", map[current].name);
+}
+
+void printRoutingTable(int numVertices, int distance[], int next_hop[], int parent[], int startNode, VertexMap map[], int step) {
+    int i;
+    printf("\nRouting Table after Step %d\n", step);
+    printf("Dest\tCost\tNext Hop\tFull Path From Source\n");
+    for (i = 0; i < numVertices; i++) {
+        printf("%s\t", map[i].name);
+        if (distance[i] == INF) {
+            printf("INF\t-\t\tNo Path\n");
+        } else {
+            printf("%d\t", distance[i]);
+            if (next_hop[i] == -1) printf("-\t\t");
+            else printf("%s\t\t", map[next_hop[i]].name);
+
+            printPath(i, parent, startNode, map);
+            printf("\n");
+        }
+    }
+}
+
+void bellmanFord(int numVertices, int numEdges, Edge sortedEdges[], int startNode, VertexMap map[]) {
+    int* distance = (int*)malloc(numVertices * sizeof(int));
+    int* next_hop = (int*)malloc(numVertices * sizeof(int));
+    int* parent = (int*)malloc(numVertices * sizeof(int));
+    int i, step, changed, u, v, weight;
+
+    for (i = 0; i < numVertices; i++) {
+        distance[i] = INF;
+        next_hop[i] = -1;
+        parent[i] = -1;
+    }
+    distance[startNode] = 0;
+    next_hop[startNode] = startNode;
+    parent[startNode] = startNode;
+
+    printRoutingTable(numVertices, distance, next_hop, parent, startNode, map, 0);
+
+    for (step = 1; step <= numVertices - 1; step++) {
+        changed = 0;
+        printf("\nStep %d: Processing new low cost Edges\n", step);
+
+        for (i = 0; i < numEdges; i++) {
+            u = sortedEdges[i].source;
+            v = sortedEdges[i].destination;
+            weight = sortedEdges[i].weight;
+
+            if (distance[u] != INF && distance[u] + weight < distance[v]) {
+                printf("Edge %s : %s (Weight: %d): Old Cost to %s was %s, New Cost is %d\n",
+                       map[u].name, map[v].name, weight, map[v].name, (distance[v] == INF ? "INF" : "valid"), distance[u] + weight);
+
+                distance[v] = distance[u] + weight;
+                parent[v] = u;
+
+                if (u == startNode) {
+                    next_hop[v] = v;
+                } else {
+                    next_hop[v] = next_hop[u];
+                }
+                changed = 1;
+            }
+        }
+
+        printRoutingTable(numVertices, distance, next_hop, parent, startNode, map, step);
+
+        if (!changed) {
+            break;
+        }
+    }
+
+    int hasNegativeCycle = 0;
+    for (i = 0; i < numEdges; i++) {
+        u = sortedEdges[i].source;
+        v = sortedEdges[i].destination;
+        weight = sortedEdges[i].weight;
+
+        if (distance[u] != INF && distance[u] + weight < distance[v]) {
+            hasNegativeCycle = 1;
+            break;
+        }
+    }
+
+    if (hasNegativeCycle) {
+        printf("Graph contains a negative weight cycle! Routing table is unstable.\n");
+    }
+
+    free(distance);
+    free(next_hop);
+    free(parent);
+}
+
+int main() {
+    int numVertices, startNode, i, j;
+    char startNodeName[MAX_NAME_LEN];
+
+    printf("Enter total number of vertices: ");
+    if (scanf("%d", &numVertices) != 1) return 1;
+    VertexMap* map = (VertexMap*)malloc(numVertices * sizeof(VertexMap));
+    printf("\nEnter the names for the %d vertices:\n", numVertices);
+    for (i = 0; i < numVertices; i++) {
+        printf("Vertex %d name: ", i + 1);
+        scanf("%s", map[i].name);
+        map[i].id = i;
+    }
+    int edgeCapacity = numVertices * 2;
+    int totalEdges = 0;
+    Edge* tempEdgeList = (Edge*)malloc(edgeCapacity * sizeof(Edge));
+    printf("\nEnter Outgoing Edges for Each Vertex\n");
+    for (i = 0; i < numVertices; i++) {
+        int outgoingCount;
+        printf("\nHow many edges are going out of vertex '%s'? ", map[i].name);
+        if (scanf("%d", &outgoingCount) != 1) return 1;
+
+        for (j = 0; j < outgoingCount; j++) {
+            char destName[MAX_NAME_LEN];
+            int weight;
+
+            printf("\tEnter destination vertex name: ", j + 1);
+            scanf("%s", destName);
+            printf("\tEnter edge weight: ", j + 1);
+            if (scanf("%d", &weight) != 1) return 1;
+
+            int destId = findVertexId(map, numVertices, destName);
+            if (destId == -1) {
+                printf("Error: Vertex '%s' does not exist! Try this edge again.\n", destName);
+                j--;
+                continue;
+            }
+            if (totalEdges >= edgeCapacity) {
+                edgeCapacity *= 2;
+                tempEdgeList = (Edge*)realloc(tempEdgeList, edgeCapacity * sizeof(Edge));
+            }
+
+            tempEdgeList[totalEdges].source = map[i].id;
+            tempEdgeList[totalEdges].destination = destId;
+            tempEdgeList[totalEdges].weight = weight;
+            totalEdges++;
+        }
+    }
+    MinHeap* edgeHeap = createHeap(totalEdges);
+    for (i = 0; i < totalEdges; i++) {
+        insertHeap(edgeHeap, tempEdgeList[i]);
+    }
+    free(tempEdgeList);
+    printf("\nEnter the source/start router node name: ");
+    scanf("%s", startNodeName);
+    startNode = findVertexId(map, numVertices, startNodeName);
+
+    if (startNode == -1) {
+        printf("Error: Invalid source router name.\n");
+        free(edgeHeap->data);
+        free(edgeHeap);
+        free(map);
+        return 1;
+    }
+
+    Edge* sortedEdges = (Edge*)malloc(totalEdges * sizeof(Edge));
+    for (i = 0; i < totalEdges; i++) {
+        sortedEdges[i] = extractMin(edgeHeap);
+    }
+
+    bellmanFord(numVertices, totalEdges, sortedEdges, startNode, map);
+
+    free(sortedEdges);
+    free(edgeHeap->data);
+    free(edgeHeap);
+    free(map);
+    return 0;
+}
