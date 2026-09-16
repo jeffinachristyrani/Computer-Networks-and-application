@@ -1,0 +1,291 @@
+[24bcs141@mepcolinux ex6]$cat c21.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define BUFFER_SIZE 1024
+
+int main(int argc, char *argv[]) {
+
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <Server IP> <Server Port>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    char *server_ip = argv[1];
+    int port = atoi(argv[2]);
+
+    int client_fd;
+    char url_buffer[BUFFER_SIZE];
+    char ip_buffer[BUFFER_SIZE];
+    char choice[10];
+
+    struct sockaddr_in server_addr;
+    socklen_t addr_len = sizeof(server_addr);
+
+    client_fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (client_fd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
+        perror("Invalid server address");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("--- DNS Query Client Terminal ---\n");
+
+    while (1) {
+
+        printf("Enter URL to resolve (or type 'exit'): ");
+
+        if (fgets(url_buffer, sizeof(url_buffer), stdin) == NULL)
+            break;
+
+        url_buffer[strcspn(url_buffer, "\n")] = '\0';
+
+        if (strlen(url_buffer) == 0)
+            continue;
+
+        if (strcmp(url_buffer, "exit") == 0)
+            break;
+
+        /* Send URL to server */
+        sendto(client_fd, url_buffer, strlen(url_buffer), 0,
+               (struct sockaddr *)&server_addr, addr_len);
+
+        memset(ip_buffer, 0, BUFFER_SIZE);
+
+        int len = recvfrom(client_fd, ip_buffer,
+                           BUFFER_SIZE - 1, 0,
+                           (struct sockaddr *)&server_addr,
+                           &addr_len);
+
+        if (len <= 0) {
+            perror("Failed to get response");
+            continue;
+        }
+
+        ip_buffer[len] = '\0';
+
+        /* If URL is not found */
+        if (strcmp(ip_buffer, "NOT_FOUND") == 0) {
+
+            printf("Host '%s' not found.\n", url_buffer);
+
+            printf("Do you want to add it to the DNS table? (y/n): ");
+            fgets(choice, sizeof(choice), stdin);
+
+            if (choice[0] == 'y' || choice[0] == 'Y') {
+
+                char ip[64];
+                char add_request[BUFFER_SIZE];
+
+                printf("Enter IP address: ");
+                fgets(ip, sizeof(ip), stdin);
+
+                ip[strcspn(ip, "\n")] = '\0';
+
+                /*
+                 * Create:
+                 * ADD|url|ip
+                 */
+                snprintf(add_request, sizeof(add_request),
+                         "ADD|%s|%s", url_buffer, ip);
+
+                sendto(client_fd, add_request,
+                       strlen(add_request), 0,
+                       (struct sockaddr *)&server_addr,
+                       addr_len);
+
+                memset(ip_buffer, 0, BUFFER_SIZE);
+
+                len = recvfrom(client_fd, ip_buffer,
+                               BUFFER_SIZE - 1, 0,
+                               (struct sockaddr *)&server_addr,
+                               &addr_len);
+
+                if (len > 0) {
+
+                    ip_buffer[len] = '\0';
+
+                    if (strcmp(ip_buffer, "ADDED") == 0)
+                        printf("Successfully added: %s -> %s\n\n",
+                               url_buffer, ip);
+                }
+            }
+            else {
+                printf("Entry was not added.\n\n");
+            }
+        }
+        else {
+            printf("Result: %s -> %s\n\n",
+                   url_buffer, ip_buffer);
+        }
+    }
+
+    close(client_fd);
+    return 0;
+}
+[24bcs141@mepcolinux ex6]$cat s21.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define BUFFER_SIZE 1024
+#define TABLE_SIZE 17
+
+typedef struct DNSEntry {
+    char url[256];
+    char ip[64];
+    struct DNSEntry *next;
+} DNSEntry;
+
+DNSEntry *hash_table[TABLE_SIZE] = {NULL};
+
+unsigned int hash(const char *str) {
+    unsigned int h = 0;
+
+    while (*str)
+        h = (h << 5) + *str++;
+
+    return h % TABLE_SIZE;
+}
+
+void insert_dns(const char *url, const char *ip) {
+    unsigned int index = hash(url);
+
+    DNSEntry *new_entry = malloc(sizeof(DNSEntry));
+
+    strcpy(new_entry->url, url);
+    strcpy(new_entry->ip, ip);
+
+    new_entry->next = hash_table[index];
+    hash_table[index] = new_entry;
+}
+
+const char *lookup_dns(const char *url) {
+    unsigned int index = hash(url);
+    DNSEntry *curr = hash_table[index];
+
+    while (curr != NULL) {
+        if (strcmp(curr->url, url) == 0)
+            return curr->ip;
+
+        curr = curr->next;
+    }
+
+    return "NOT_FOUND";
+}
+
+void init_dns_table() {
+    insert_dns("google.com", "142.250.190.46");
+    insert_dns("github.com", "140.82.121.4");
+    insert_dns("openai.com", "104.18.23.238");
+    insert_dns("wikipedia.org", "198.35.26.96");
+}
+
+int main(int argc, char *argv[]) {
+
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <Port>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    int port = atoi(argv[1]);
+    int server_fd;
+    char buffer[BUFFER_SIZE];
+
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    init_dns_table();
+
+    server_fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (server_fd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0) {
+
+        perror("Bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("--- UDP DNS Server started on port %d ---\n", port);
+
+    while (1) {
+
+        memset(buffer, 0, BUFFER_SIZE);
+
+        int len = recvfrom(server_fd, buffer, BUFFER_SIZE - 1, 0,
+                           (struct sockaddr *)&client_addr,
+                           &addr_len);
+
+        if (len < 0)
+            continue;
+
+        buffer[len] = '\0';
+
+        /*
+         * ADD request format:
+         * ADD|url|ip
+         */
+        if (strncmp(buffer, "ADD|", 4) == 0) {
+
+            char *url = strtok(buffer + 4, "|");
+            char *ip = strtok(NULL, "|");
+
+            if (url != NULL && ip != NULL) {
+
+                insert_dns(url, ip);
+
+                printf("[NEW ENTRY] %s -> %s\n", url, ip);
+
+                sendto(server_fd, "ADDED", 5, 0,
+                       (struct sockaddr *)&client_addr,
+                       addr_len);
+            }
+
+            continue;
+        }
+
+        printf("[LOOKUP REQUEST] URL: '%s' from %s:%d\n",
+               buffer,
+               inet_ntoa(client_addr.sin_addr),
+               ntohs(client_addr.sin_port));
+
+        const char *resolved_ip = lookup_dns(buffer);
+
+        printf("[RESPONSE SENT] IP: %s\n", resolved_ip);
+
+        sendto(server_fd, resolved_ip, strlen(resolved_ip), 0,
+               (struct sockaddr *)&client_addr,
+               addr_len);
+    }
+
+    close(server_fd);
+    return 0;
+}
+[24bcs141@mepcolinux ex6]$
