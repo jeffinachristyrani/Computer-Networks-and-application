@@ -1,0 +1,280 @@
+[24bcs141@mepcolinux ex6]$cat c13.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+
+#define BUFFER_SIZE 1024
+
+int client_fd;
+struct sockaddr_in server_addr;
+
+void *receive_messages(void *arg) {
+    char buffer[BUFFER_SIZE];
+    socklen_t addr_len = sizeof(server_addr);
+    int len;
+
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE);
+        len = recvfrom(client_fd, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr *)&server_addr, &addr_len);
+
+        if (len > 0) {
+            buffer[len] = '\0';
+            // Clear current prompt line before outputting incoming data
+            printf("\r%s\n> ", buffer);
+            fflush(stdout);
+        } else if (len < 0) {
+            perror("\nError reading from server");
+            break;
+        }
+    }
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    char *server_ip;
+    int port;
+    char username[50];
+    char msg_buffer[BUFFER_SIZE];
+    char formatted_msg[BUFFER_SIZE + 60];
+    pthread_t recv_thread;
+
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <Server IP> <Server Port>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    server_ip = argv[1];
+    port = atoi(argv[2]);
+
+    printf("Enter your username: ");
+    if (fgets(username, sizeof(username), stdin) == NULL) return 0;
+    username[strcspn(username, "\n")] = '\0';
+
+    if ((client_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
+        perror("Invalid address / Address not supported");
+        exit(EXIT_FAILURE);
+    }
+
+    if (pthread_create(&recv_thread, NULL, receive_messages, NULL) != 0) {
+        perror("Failed to create receiving thread");
+        close(client_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("--- Connected to UDP Chat Server at %s:%d! ---\n", server_ip, port);
+
+    sprintf(formatted_msg, "%s has joined the chat room.", username);
+    sendto(client_fd, formatted_msg, strlen(formatted_msg), 0, (const struct sockaddr *)&server_addr, sizeof(server_addr));
+
+    while (1) {
+        printf("> ");
+        fflush(stdout);
+
+        if (fgets(msg_buffer, sizeof(msg_buffer), stdin) == NULL) break;
+        msg_buffer[strcspn(msg_buffer, "\n")] = '\0';
+
+        if (strlen(msg_buffer) == 0) continue;
+
+        if (strcmp(msg_buffer, "exit") == 0) {
+            sprintf(formatted_msg, "%s has left the chat room.", username);
+            sendto(client_fd, formatted_msg, strlen(formatted_msg), 0, (const struct sockaddr *)&server_addr, sizeof(server_addr));
+            break;
+        }
+
+        sprintf(formatted_msg, "%s: %s", username, msg_buffer);
+        sendto(client_fd, formatted_msg, strlen(formatted_msg), 0, (const struct sockaddr *)&server_addr, sizeof(server_addr));
+    }
+
+    pthread_cancel(recv_thread);
+    close(client_fd);
+    printf("Disconnected.\n");
+    return 0;
+}
+
+[24bcs141@mepcolinux ex6]$cat s13.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+
+#define BUFFER_SIZE 1024
+#define MAX_CLIENTS 100
+
+typedef struct {
+    struct sockaddr_in addr;
+    int active;
+} Client;
+
+Client clients[MAX_CLIENTS];
+int client_count = 0;
+int server_fd;
+
+/* Thread safety mutex for the shared client roster */
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int get_or_register_client(struct sockaddr_in *client_addr) {
+    int i;
+
+    pthread_mutex_lock(&clients_mutex);
+    for (i = 0; i < client_count; i++) {
+        if (clients[i].addr.sin_addr.s_addr == client_addr->sin_addr.s_addr &&
+            clients[i].addr.sin_port == client_addr->sin_port) {
+            pthread_mutex_unlock(&clients_mutex);
+            return i;
+        }
+    }
+
+    if (client_count < MAX_CLIENTS) {
+        clients[client_count].addr = *client_addr;
+        clients[client_count].active = 1;
+        client_count++;
+        pthread_mutex_unlock(&clients_mutex);
+        return client_count - 1;
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+    return -1;
+}
+
+/* Background thread to handle all incoming packets asynchronously */
+void *receive_packets(void *arg) {
+    char buffer[BUFFER_SIZE];
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    int len;
+    int sender_index;
+    int i;
+
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE);
+        len = recvfrom(server_fd, buffer, BUFFER_SIZE - 1, 0,
+                       (struct sockaddr *)&client_addr, &addr_len);
+
+        if (len < 0) {
+            perror("Recvfrom failed");
+            continue;
+        }
+
+        buffer[len] = '\0';
+
+        sender_index = get_or_register_client(&client_addr);
+        if (sender_index == -1) {
+            printf("\n[Server System] Capacity full. Rejected message.\nServer: ");
+            fflush(stdout);
+            continue;
+        }
+
+        /* Print incoming client message nicely without breaking the input line */
+        printf("\rClient [%s:%d]: %s\nServer: ",
+               inet_ntoa(client_addr.sin_addr),
+               ntohs(client_addr.sin_port),
+               buffer);
+        fflush(stdout);
+
+        /* Broadcast message to all OTHER active clients */
+        pthread_mutex_lock(&clients_mutex);
+        for (i = 0; i < client_count; i++) {
+            if (clients[i].active &&
+                (clients[i].addr.sin_addr.s_addr != client_addr.sin_addr.s_addr ||
+                 clients[i].addr.sin_port != client_addr.sin_port)) {
+
+                sendto(server_fd, buffer, strlen(buffer), 0,
+                       (struct sockaddr *)&clients[i].addr,
+                       sizeof(clients[i].addr));
+            }
+        }
+
+        /* Check if a client left to deactivate them */
+        if (strstr(buffer, "has left the chat room.") != NULL) {
+            clients[sender_index].active = 0;
+        }
+        pthread_mutex_unlock(&clients_mutex);
+    }
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    int port;
+    struct sockaddr_in server_addr;
+    pthread_t recv_thread;
+    char console_buffer[BUFFER_SIZE];
+    char formatted_reply[BUFFER_SIZE + 20];
+    int i;
+
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <Port>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    port = atoi(argv[1]);
+    server_fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (server_fd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("--- UDP Interactive Chat Server started on port %d ---\n", port);
+
+    /* Spin up background thread to listen for clients */
+    if (pthread_create(&recv_thread, NULL, receive_packets, NULL) != 0) {
+        perror("Failed to create receiving thread");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Main thread loops exclusively to process inputs from the server host */
+    while (1) {
+        printf("Server: ");
+        fflush(stdout);
+
+        if (fgets(console_buffer, sizeof(console_buffer), stdin) == NULL) break;
+        console_buffer[strcspn(console_buffer, "\n")] = '\0';
+
+        if (strlen(console_buffer) == 0) continue;
+
+        sprintf(formatted_reply, "Server: %s", console_buffer);
+
+        /* Broadcast the server's input reply to ALL connected, active clients */
+        pthread_mutex_lock(&clients_mutex);
+        for (i = 0; i < client_count; i++) {
+            if (clients[i].active) {
+                sendto(server_fd, formatted_reply, strlen(formatted_reply), 0,
+                       (struct sockaddr *)&clients[i].addr,
+                       sizeof(clients[i].addr));
+            }
+        }
+        pthread_mutex_unlock(&clients_mutex);
+    }
+
+    pthread_cancel(recv_thread);
+    close(server_fd);
+    return 0;
+}
+
+[24bcs141@mepcolinux ex6]$
