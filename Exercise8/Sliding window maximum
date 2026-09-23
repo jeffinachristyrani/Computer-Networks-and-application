@@ -1,0 +1,39 @@
+#include <stdlib.h>
+
+int* maxSlidingWindow(int* nums, int numsSize, int k, int* returnSize) {
+    if (numsSize == 0 || k == 0) {
+        *returnSize = 0;
+        return NULL;
+    }
+
+    int* result = (int*)malloc((numsSize - k + 1) * sizeof(int));
+    int* deque = (int*)malloc(numsSize * sizeof(int)); // Stores indices
+    
+    int head = 0; // Front of the queue
+    int tail = 0; // Back of the queue
+    int resIdx = 0;
+
+    for (int i = 0; i < numsSize; i++) {
+        // Remove indices that are out of the current window bounds
+        if (head < tail && deque[head] < i - k + 1) {
+            head++;
+        }
+
+        // Remove elements from the back that are smaller than the current element
+        while (head < tail && nums[deque[tail - 1]] < nums[i]) {
+            tail--;
+        }
+
+        // Add current element's index to the back
+        deque[tail++] = i;
+
+        // Start adding to results once the first window is fully covered
+        if (i >= k - 1) {
+            result[resIdx++] = nums[deque[head]];
+        }
+    }
+
+    free(deque);
+    *returnSize = resIdx;
+    return result;
+}
