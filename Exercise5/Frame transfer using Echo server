@@ -1,0 +1,732 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define BUFFER_SIZE 4096
+
+unsigned char binary_str_to_byte(const char *bin_str)
+{
+    unsigned char byte = 0;
+    int i;
+
+    for (i = 0; i < 8; i++)
+    {
+        byte <<= 1;
+        if (bin_str[i] == '1') byte |= 1;
+    }
+    return byte;
+}
+
+void binary_add_16bit(const char *bin1, const char *bin2, char *result)
+{
+    int carry = 0;
+    int sum;
+    int i;
+    char temp[17];
+
+    for (i = 15; i >= 0; i--)
+    {
+        sum = (bin1[i] - '0') + (bin2[i] - '0') + carry;
+        temp[i] = (sum % 2) + '0';
+        carry = sum / 2;
+    }
+
+    if (carry > 0)
+    {
+        char carry_str[] = "0000000000000001";
+        carry = 0;
+        for (i = 15; i >= 0; i--)
+        {
+            sum = (temp[i] - '0') + (carry_str[i] - '0') + carry;
+            result[i] = (sum % 2) + '0';
+            carry = sum / 2;
+        }
+    }
+    else
+    {
+        strcpy(result, temp);
+    }
+    result[16] = '\0';
+}
+
+void calculate_binary_checksum(const char *binary_frame, char *checksum_out)
+{
+    char total_sum[17];
+    char current_word[17];
+    int len = strlen(binary_frame);
+    int i;
+    int j;
+
+    strcpy(total_sum, "0000000000000000");
+    current_word[16] = '\0';
+
+    for (i = 0; i < len; i += 16)
+    {
+        for (j = 0; j < 16; j++)
+        {
+            current_word[j] = (i + j < len) ? binary_frame[i + j] : '0';
+        }
+        binary_add_16bit(total_sum, current_word, total_sum);
+    }
+
+    for (i = 0; i < 16; i++)
+    {
+        checksum_out[i] = (total_sum[i] == '0') ? '1' : '0';
+    }
+    checksum_out[16] = '\0';
+}
+
+// --- PPP Frame Processing Functions ---
+
+void perform_byte_destuffing(const char *rx_buffer, char *de_stuffed)
+{
+    char current_byte[9];
+    char core_stuffed[BUFFER_SIZE] = {0};
+    const char *escape = "01111101";
+    int core_len;
+    int i;
+
+    strncpy(core_stuffed, rx_buffer + 8, strlen(rx_buffer) - 16);
+    core_stuffed[strlen(rx_buffer) - 16] = '\0';
+
+    core_len = strlen(core_stuffed);
+    de_stuffed[0] = '\0';
+    current_byte[8] = '\0';
+
+    for (i = 0; i < core_len; i += 8)
+    {
+        strncpy(current_byte, core_stuffed + i, 8);
+        if (strcmp(current_byte, escape) == 0)
+        {
+            i += 8;
+            strncpy(current_byte, core_stuffed + i, 8);
+        }
+        strcat(de_stuffed, current_byte);
+    }
+}
+
+int verify_and_extract_payload(const char *de_stuffed, char *extracted_payload, char *proto_bits)
+{
+    char extracted_data[2048] = {0};
+    char received_fcs[17] = {0};
+    char recalculated_fcs[17] = {0};
+    int data_len;
+
+    data_len = strlen(de_stuffed) - 16;
+    strncpy(extracted_data, de_stuffed, data_len);
+    extracted_data[data_len] = '\0';
+    strcpy(received_fcs, de_stuffed + data_len);
+
+    calculate_binary_checksum(extracted_data, recalculated_fcs);
+    printf("Step 4:\nReceived FCS:     %s\nCalculated FCS: %s\n", received_fcs, recalculated_fcs);
+
+    if (strcmp(recalculated_fcs, received_fcs) != 0)
+    {
+        printf("\nERROR DETECTED: frame discarded.\n");
+        return 0;
+    }
+
+    printf("\nNO ERROR DETECTED: No errors detected.\n");
+    strncpy(proto_bits, extracted_data + 16, 16);
+    proto_bits[16] = '\0';
+
+    strcpy(extracted_payload, extracted_data + 32);
+    return 1;
+}
+
+void print_final_results(const char *payload_stream, int bit_len)
+{
+    char single_byte_str[9] = {0};
+    int i;
+    printf("FINAL EXTRACTED PAYLOAD AND DECODED MESSAGE\n");
+    printf("FINAL PAYLOAD (BITS): %s\n", payload_stream);
+    printf("Decoded File Message: ");
+
+    for (i = 0; i < bit_len; i += 8)
+    {
+        memset(single_byte_str, 0, sizeof(single_byte_str));
+        strncpy(single_byte_str, payload_stream + i, 8);
+
+        if (strlen(single_byte_str) == 8)
+        {
+            unsigned char decoded_char = binary_str_to_byte(single_byte_str);
+            if (decoded_char != '\0')
+            {
+                printf("%c", decoded_char);
+            }
+        }
+    }
+    print("\n")
+}
+int setup_server_socket(const char *port)
+{
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    struct sockaddr_in server_addr;
+
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(atoi(port));
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        return -1;
+    }
+    listen(server_fd, 5);
+    printf("Byte-Stuffing PPP Server active on port %s\n", port);
+    return server_fd;
+}
+
+void handle_client_stream(int client_fd, int packet_size, int frame_size, int original_bit_len)
+{
+    char rx_buffer[BUFFER_SIZE] = {0};
+    char de_stuffed[BUFFER_SIZE] = {0};
+    char current_extracted_payload[2048] = {0};
+    char proto_bits[17] = {0};
+
+    // Intermediate structures for layered decoding
+    char master_payload_collector[8192] = {0};
+    char current_packet_collector[4096] = {0};
+
+    int rx_len;
+    int current_frame_count = 1;
+
+    // A clean de-stuffed frame contains Address/Control(16) + Proto(16) + Payload + FCS(16)
+    // Therefore, the payload capacity of a single frame is: frame_size - 48 bits.
+    int frame_payload_capacity = frame_size - 48;
+    int total_msg_bits_remaining = original_bit_len;
+
+    while (1)
+    {
+        if (recv(client_fd, &rx_len, sizeof(rx_len), 0) <= 0 || rx_len == -1) break;
+
+        recv(client_fd, rx_buffer, rx_len, 0);
+        rx_buffer[rx_len] = '\0';
+
+        printf("\nReceiving Frame %d\n", current_frame_count);
+        printf("Raw fram bits recieved:\n%s\n", rx_buffer);
+
+        perform_byte_destuffing(rx_buffer, de_stuffed);
+        printf("Frame bits after removing padding bits and stuffing:\n%s\n", de_stuffed);
+
+        if (verify_and_extract_payload(de_stuffed, current_extracted_payload, proto_bits))
+        {
+            printf("Protocol Header Bits: %s\n", proto_bits);
+            printf("Extracted Payload Bit segment): %s\n", current_extracted_payload);
+            int current_packet_bits_remaining = packet_size - strlen(current_packet_collector);
+            int valid_frame_payload_len = frame_payload_capacity;
+            if (current_packet_bits_remaining < frame_payload_capacity)
+            {
+                valid_frame_payload_len = current_packet_bits_remaining;
+            }
+
+            current_extracted_payload[valid_frame_payload_len] = '\0';
+            strcat(current_packet_collector, current_extracted_payload);
+            if ((int)strlen(current_packet_collector) >= packet_size || total_msg_bits_remaining <= packet_size)
+            {
+                int valid_packet_len = packet_size;
+                if (total_msg_bits_remaining < packet_size)
+                {
+                    valid_packet_len = total_msg_bits_remaining;
+                }
+
+                current_packet_collector[valid_packet_len] = '\0';
+                strcat(master_payload_collector, current_packet_collector);
+
+                total_msg_bits_remaining -= valid_packet_len;
+                current_packet_collector[0] = '\0';
+            }
+        }
+        current_frame_count++;
+    }
+    print_final_results(master_payload_collector, original_bit_len);
+}
+
+int main(int argc, char *argv[])
+{
+    int server_fd;
+    int client_fd;
+    int packet_size;
+    int frame_size;
+    int original_bit_len;
+    struct sockaddr_in client_addr;
+    socklen_t addr_len;
+
+    if (argc != 2) return 1;
+
+    server_fd = setup_server_socket(argv[1]);
+    if (server_fd < 0) return 1;
+
+    addr_len = sizeof(client_addr);
+    client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+    printf("Client network channel link accepted.\n");
+
+    recv(client_fd, &packet_size, sizeof(packet_size), 0);
+    recv(client_fd, &frame_size, sizeof(frame_size), 0);
+    recv(client_fd, &original_bit_len, sizeof(original_bit_len), 0);
+    printf("Parameters\nPacket: %d bits \nFrame: %d bits  \nMessage Size: %d bits\n", packet_size, frame_size, original_bit_len);
+
+    handle_client_stream(client_fd, packet_size, frame_size, original_bit_len);
+
+    close(client_fd);
+    close(server_fd);
+    return 0;
+}
+
+[24bcs141@mepcolinux ex5]$cat client8.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+void byte_to_binary_str(unsigned char byte, char *out_str)
+{
+    int i;
+    for (i = 7; i >= 0; i--)
+    {
+        out_str[7 - i] = ((byte >> i) & 1) ? '1' : '0';
+    }
+    out_str[8] = '\0';
+}
+
+void binary_add_16bit(const char *bin1, const char *bin2, char *result)
+{
+    int i;
+    int carry;
+    int sum;
+    char temp[17];
+
+    carry = 0;
+    temp[16] = '\0';
+
+    for (i = 15; i >= 0; i--)
+    {
+        sum = (bin1[i] - '0') + (bin2[i] - '0') + carry;
+        temp[i] = (sum % 2) + '0';
+        carry = sum / 2;
+    }
+
+    if (carry > 0)
+    {
+        char carry_str[17];
+        strcpy(carry_str, "0000000000000001");
+        carry = 0;
+        for (i = 15; i >= 0; i--)
+        {
+            sum = (temp[i] - '0') + (carry_str[i] - '0') + carry;
+            result[i] = (sum % 2) + '0';
+            carry = sum / 2;
+        }
+    }
+    else
+    {
+        strcpy(result, temp);
+    }
+    result[16] = '\0';
+}
+
+void calculate_binary_checksum(const char *binary_frame, char *checksum_out)
+{
+    char total_sum[17];
+    char current_word[17];
+    int len;
+    int i;
+    int j;
+
+    strcpy(total_sum, "0000000000000000");
+    len = strlen(binary_frame);
+    current_word[16] = '\0';
+
+    for (i = 0; i < len; i += 16)
+    {
+        for (j = 0; j < 16; j++)
+        {
+            if (i + j < len)
+            {
+                current_word[j] = binary_frame[i + j];
+            }
+            else
+            {
+                current_word[j] = '0';
+            }
+        }
+        binary_add_16bit(total_sum, current_word, total_sum);
+    }
+
+    for (i = 0; i < 16; i++)
+    {
+        checksum_out[i] = (total_sum[i] == '0') ? '1' : '0';
+    }
+    checksum_out[16] = '\0';
+}
+
+void read_file_to_binary(const char *filename, char *payload_bin, int *original_bit_len)
+{
+    FILE *file;
+    int ch;
+    char byte_bin[9];
+
+    file = fopen(filename, "r");
+    if (!file)
+    {
+        perror("File open failed");
+        exit(1);
+    }
+    payload_bin[0] = '\0';
+    while ((ch = fgetc(file)) != EOF)
+    {
+        byte_to_binary_str((unsigned char)ch, byte_bin);
+        strcat(payload_bin, byte_bin);
+    }
+    fclose(file);
+    *original_bit_len = strlen(payload_bin);
+    printf("Step 1 (Full Payload Binary): %s\n", payload_bin);
+    printf("Original Message Bit Length (Multiple of 8): %d bits\n", *original_bit_len);
+}
+
+void select_protocol(char *proto_bin)
+{
+    int choice;
+    printf("\nSelect PPP Protocol:\n1. IPv4\n2. IPv6\n3. LCP\n4. PAP\n5. CHAP\n6. IPCP\nChoice: ");
+    if (scanf("%d", &choice) != 1) exit(1);
+
+    switch (choice)
+    {
+        case 1: strcpy(proto_bin, "0000000000100001"); break;
+        case 2: strcpy(proto_bin, "0000000001010111"); break;
+        case 3: strcpy(proto_bin, "1100000000100001"); break;
+        case 4: strcpy(proto_bin, "1100000000100011"); break;
+        case 5: strcpy(proto_bin, "1100001000100011"); break;
+        case 6: strcpy(proto_bin, "1000000000100001"); break;
+        default: strcpy(proto_bin, "0000000000100001"); break;
+    }
+    printf("Step 2 (Protocol Bits): %s\n", proto_bin);
+}
+
+void perform_byte_stuffing(const char *un_stuffed, char *stuffed)
+{
+    int i;
+    int len;
+    char current_byte[9];
+    const char *flag = "01111110";
+    const char *escape = "01111101";
+
+    len = strlen(un_stuffed);
+    strcpy(stuffed, flag);
+    current_byte[8] = '\0';
+
+    for (i = 0; i < len; i += 8)
+    {
+        strncpy(current_byte, un_stuffed + i, 8);
+        if (strcmp(current_byte, flag) == 0 || strcmp(current_byte, escape) == 0)
+        {
+            strcat(stuffed, escape);
+        }
+        strcat(stuffed, current_byte);
+    }
+    strcat(stuffed, flag);
+}
+
+void inject_error_if_requested(char *stuffed_frame)
+{
+    int error_choice;
+    printf("Do you want inject an error? (1=Yes, 0=No): ");
+    if (scanf("%d", &error_choice) != 1) return;
+    int pos;
+    printf("Enter the position to inject error:");
+    scanf("%d",&pos);
+    if (error_choice == 1 && strlen(stuffed_frame) > 24)
+    {
+        stuffed_frame[pos] = (stuffed_frame[pos] == '1') ? '0' : '1';
+        printf("Error Injected at position %d!\n",pos);
+    }
+}
+
+int main(int argc, char *argv[])
+{
+    int sockfd;
+    int packet_size;
+    int frame_size;
+    int total_bits;
+    int original_bit_len;
+    int p_idx;
+    int f_idx;
+    int i;
+    int current_frame_count;
+    struct sockaddr_in server_addr;
+
+    char full_payload[4096] = {0};
+    char proto_bin[17] = {0};
+    char current_packet[1024] = {0};
+    char current_payload_frame[1024] = {0};
+    char un_stuffed_frame[2048] = {0};
+    char stuffed_frame[4096] = {0};
+    char fcs_bin[17] = {0};
+
+    if (argc != 4)
+    {
+        printf("Usage: %s <IP> <Port> <Filename>\n", argv[0]);
+        return 1;
+    }
+
+    read_file_to_binary(argv[3], full_payload, &original_bit_len);
+
+    printf("Enter target Packet size: ");
+    if (scanf("%d", &packet_size) != 1) return 1;
+    printf("Enter target Payload Frame size: ");
+    if (scanf("%d", &frame_size) != 1) return 1;
+
+    select_protocol(proto_bin);
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) return 1;
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(atoi(argv[2]));
+    inet_pton(AF_INET, argv[1], &server_addr.sin_addr);
+
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        perror("Connect failed");
+        return 1;
+    }
+    printf("Connected to Server.\n");
+    send(sockfd, &packet_size, sizeof(packet_size), 0);
+    usleep(1000);
+    send(sockfd, &frame_size, sizeof(frame_size), 0);
+    usleep(1000);
+    send(sockfd, &original_bit_len, sizeof(original_bit_len), 0);
+    usleep(1000);
+
+    total_bits = strlen(full_payload);
+    p_idx = 0;
+    current_frame_count = 1;
+
+    while (p_idx < total_bits)
+    {
+        strncpy(current_packet, full_payload + p_idx, packet_size);
+        current_packet[packet_size] = '\0';
+
+        if ((int)strlen(current_packet) < packet_size)
+        {
+            int short_by = packet_size - strlen(current_packet);
+            for (i = 0; i < short_by; i++)
+            {
+                strcat(current_packet, "0");
+            }
+            printf("Zero padding in Packet: %s\n", current_packet);
+        }
+
+        f_idx = 0;
+        while (f_idx < packet_size)
+        {
+            strncpy(current_payload_frame, current_packet + f_idx, frame_size);
+            current_payload_frame[frame_size] = '\0';
+
+            if ((int)strlen(current_payload_frame) < frame_size)
+            {
+                int short_by = frame_size - strlen(current_payload_frame);
+                for (i = 0; i < short_by; i++)
+                {
+                    strcat(current_payload_frame, "0");
+                }
+                printf("Zero paddeding in Frame: %s\n", current_payload_frame);
+            }
+
+            printf("\nProcessing Frame %d\n", current_frame_count);
+            printf("Payload Frame Content: %s\n", current_payload_frame);
+
+            sprintf(un_stuffed_frame, "1111111100000011%s%s", proto_bin, current_payload_frame);
+
+            calculate_binary_checksum(un_stuffed_frame, fcs_bin);
+            printf("Step 4: %s\n", fcs_bin);
+
+            strcat(un_stuffed_frame, fcs_bin);
+            perform_byte_stuffing(un_stuffed_frame, stuffed_frame);
+            printf("Step 5 (After byte stuffing):\n%s\n", stuffed_frame);
+            inject_error_if_requested(stuffed_frame);
+
+            int frame_len = strlen(stuffed_frame);
+            send(sockfd, &frame_len, sizeof(frame_len), 0);
+            usleep(1000);
+            send(sockfd, stuffed_frame, frame_len, 0);
+            usleep(5000);
+
+            f_idx += frame_size;
+            current_frame_count++;
+        }
+        p_idx += packet_size;
+    }
+
+    int stop_signal = -1;
+    send(sockfd, &stop_signal, sizeof(stop_signal), 0);
+
+    printf("\nTransmission complete. Closing connection.\n");
+    close(sockfd);
+    return 0;
+}
+
+[24bcs141@mepcolinux ex5]$./s82 8086
+Byte-Stuffing PPP Server active on port 8086
+Client network channel link accepted.
+Parameters
+Packet: 16 bits
+Frame: 8 bits
+Message Size: 40 bits
+
+Receiving Frame 1
+Step 1 (Raw Frame String):
+01111110111111110000001100000000001000010111110101111110100000101101101001111110
+Step 2 & 3 (Flags Stripped & De-Stuffed):
+11111111000000110000000000100001011111101000001011011010
+Step 4:
+Received FCS:     1000001011011010
+Calculated FCS: 1000001011011010
+
+NO ERROR DETECTED: No errors detected.
+Protocol Header Bits: 0000000000100001
+Extracted Payload Bit segment): 01111110
+
+Receiving Frame 2
+Step 1 (Raw Frame String):
+011011101111111100000011000000000010000101001000101110001101101001111110
+Step 2 & 3 (Flags Stripped & De-Stuffed):
+11111111000000110000000000100001010010001011100011011010
+Step 4:
+Received FCS:     1011100011011010
+Calculated FCS: 1011100011011010
+
+NO ERROR DETECTED: No errors detected.
+Protocol Header Bits: 0000000000100001
+Extracted Payload Bit segment): 01001000
+
+Receiving Frame 3
+Step 1 (Raw Frame String):
+011111101111111100000011000000000010000101001001101101111101101001111110
+Step 2 & 3 (Flags Stripped & De-Stuffed):
+11111111000000110000000000100001010010011011011111011010
+Step 4:
+Received FCS:     1011011111011010
+Calculated FCS: 1011011111011010
+
+NO ERROR DETECTED: No errors detected.
+Protocol Header Bits: 0000000000100001
+Extracted Payload Bit segment): 01001001
+
+Receiving Frame 4
+Step 1 (Raw Frame String):
+01111110111111110000001100000000001000010111110101111110100000101101101001111110
+Step 2 & 3 (Flags Stripped & De-Stuffed):
+11111111000000110000000000100001011111101000001011011010
+Step 4:
+Received FCS:     1000001011011010
+Calculated FCS: 1000001011011010
+
+NO ERROR DETECTED: No errors detected.
+Protocol Header Bits: 0000000000100001
+Extracted Payload Bit segment): 01111110
+
+Receiving Frame 5
+Step 1 (Raw Frame String):
+011111101111111100000011000000000010000100001010111101101101101001111110
+Step 2 & 3 (Flags Stripped & De-Stuffed):
+11111111000000110000000000100001000010101111011011011010
+Step 4:
+Received FCS:     1111011011011010
+Calculated FCS: 1111011011011010
+
+NO ERROR DETECTED: No errors detected.
+Protocol Header Bits: 0000000000100001
+Extracted Payload Bit segment): 00001010
+
+Receiving Frame 6
+Step 1 (Raw Frame String):
+011111101111111100000011000000000010000100000000000000001101101101111110
+Step 2 & 3 (Flags Stripped & De-Stuffed):
+11111111000000110000000000100001000000000000000011011011
+Step 4:
+Received FCS:     0000000011011011
+Calculated FCS: 0000000011011011
+
+NO ERROR DETECTED: No errors detected.
+Protocol Header Bits: 0000000000100001
+Extracted Payload Bit segment): 00000000
+FINAL EXTRACTED PAYLOAD AND DECODED MESSAGE
+FINAL PAYLOAD (BITS): 0111111001001000010010010111111000001010
+Decoded File Message: ~HI~
+[24bcs141@mepcolinux ex5]$exit
+exit
+
+[24bcs160@mepcolinux jeffi]$./a.out 172.16.16.200 8086 text.txt
+Step 1 (Full Payload Binary): 0111111001001000010010010111111000001010
+Original Message Bit Length (Multiple of 8): 40 bits
+Enter target Packet size: 16
+Enter target Payload Frame size: 8
+
+Select PPP Protocol:
+1. IPv4
+2. IPv6
+3. LCP
+4. PAP
+5. CHAP
+6. IPCP
+Choice: 1
+Step 2 (Protocol Bits): 0000000000100001
+Connected to Server.
+
+Processing Frame 1
+Payload Frame Content: 01111110
+Step 4: 1000001011011010
+Step 5 (After byte stuffing):
+01111110111111110000001100000000001000010111110101111110100000101101101001111110
+Do you want inject an error? (1=Yes, 0=No): 0
+Enter the position to inject error:1
+
+Processing Frame 2
+Payload Frame Content: 01001000
+Step 4: 1011100011011010
+Step 5 (After byte stuffing):
+011111101111111100000011000000000010000101001000101110001101101001111110
+Do you want inject an error? (1=Yes, 0=No): 1
+Enter the position to inject error:3
+Error Injected at position 3!
+
+Processing Frame 3
+Payload Frame Content: 01001001
+Step 4: 1011011111011010
+Step 5 (After byte stuffing):
+011111101111111100000011000000000010000101001001101101111101101001111110
+Do you want inject an error? (1=Yes, 0=No): 0
+Enter the position to inject error:0
+
+Processing Frame 4
+Payload Frame Content: 01111110
+Step 4: 1000001011011010
+Step 5 (After byte stuffing):
+01111110111111110000001100000000001000010111110101111110100000101101101001111110
+Do you want inject an error? (1=Yes, 0=No): 0
+Enter the position to inject error:0
+Zero padding in Packet: 0000101000000000
+
+Processing Frame 5
+Payload Frame Content: 00001010
+Step 4: 1111011011011010
+Step 5 (After byte stuffing):
+011111101111111100000011000000000010000100001010111101101101101001111110
+Do you want inject an error? (1=Yes, 0=No): 0
+Enter the position to inject error:0
+
+Processing Frame 6
+Payload Frame Content: 00000000
+Step 4: 0000000011011011
+Step 5 (After byte stuffing):
+011111101111111100000011000000000010000100000000000000001101101101111110
+Do you want inject an error? (1=Yes, 0=No): 0
+Enter the position to inject error:0
+
+Transmission complete. Closing connection.
