@@ -1,0 +1,361 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <signal.h>
+
+#define BUFFER_SIZE 1024
+
+// Function to handle communication with a client
+void chat(int client_socket)
+{
+    char buffer[BUFFER_SIZE];
+
+    while (1)
+    {
+        // Receive message from client
+        memset(buffer, 0, BUFFER_SIZE);
+
+        int bytes_received = recv(client_socket,
+                                  buffer,
+                                  BUFFER_SIZE - 1,
+                                  0);
+
+        if (bytes_received <= 0)
+        {
+            printf("Client disconnected.\n");
+            break;
+        }
+
+        buffer[bytes_received] = '\0';
+
+        printf("Client: %s", buffer);
+
+        // Check for exit
+        if (strncmp(buffer, "exit", 4) == 0)
+            break;
+
+        // Send message to client
+        printf("Server: ");
+        fgets(buffer, BUFFER_SIZE, stdin);
+
+        send(client_socket,
+             buffer,
+             strlen(buffer),
+             0);
+
+        // Check for exit
+        if (strncmp(buffer, "exit", 4) == 0)
+            break;
+    }
+
+    close(client_socket);
+    exit(0);
+}
+
+
+// Function to create and run the server
+void start_server(char *ip, int port)
+{
+    int server_socket;
+    int client_socket;
+
+    struct sockaddr_in server_addr;
+    struct sockaddr_in client_addr;
+
+    socklen_t client_len = sizeof(client_addr);
+
+    // Create socket
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_socket < 0)
+    {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    printf("Server socket created successfully.\n");
+
+    // Configure server address
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = inet_addr(ip);
+
+    // Bind socket
+    if (bind(server_socket,
+             (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0)
+    {
+        perror("Bind failed");
+        close(server_socket);
+        exit(1);
+    }
+
+    // Listen for clients
+    if (listen(server_socket, 5) < 0)
+    {
+        perror("Listen failed");
+        close(server_socket);
+        exit(1);
+    }
+
+    printf("Server is listening on port %d...\n", port);
+
+    // Prevent zombie processes
+    signal(SIGCHLD, SIG_IGN);
+
+    while (1)
+    {
+        printf("\nWaiting for client...\n");
+
+        // Accept client
+        client_socket = accept(server_socket,
+                               (struct sockaddr *)&client_addr,
+                               &client_len);
+
+        if (client_socket < 0)
+        {
+            perror("Accept failed");
+            continue;
+        }
+
+        printf("Client connected.\n");
+
+        // Create child process for concurrent communication
+        pid_t pid = fork();
+
+        if (pid < 0)
+        {
+            perror("Fork failed");
+            close(client_socket);
+            continue;
+        }
+
+        if (pid == 0)
+        {
+            // Child process handles the client
+            close(server_socket);
+
+            chat(client_socket);
+        }
+
+        // Parent process continues accepting clients
+        close(client_socket);
+    }
+
+    close(server_socket);
+}
+
+
+// Main function
+int main(int argc, char *argv[])
+{
+    // Check command-line arguments
+    if (argc != 3)
+    {
+        printf("Usage: %s <IP Address> <Port>\n", argv[0]);
+        return 1;
+    }
+
+    // Start server
+    start_server(argv[1], atoi(argv[2]));
+
+    return 0;
+}
+[24bcs141@mepcolinux ex7]$cat s1.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <signal.h>
+
+#define BUFFER_SIZE 1024
+
+// Function to handle communication with a client
+void chat(int client_socket)
+{
+    char buffer[BUFFER_SIZE];
+
+    while (1)
+    {
+        // Receive message from client
+        memset(buffer, 0, BUFFER_SIZE);
+
+        int bytes_received = recv(client_socket,
+                                  buffer,
+                                  BUFFER_SIZE - 1,
+                                  0);
+
+        if (bytes_received <= 0)
+        {
+            printf("Client disconnected.\n");
+            break;
+        }
+
+        buffer[bytes_received] = '\0';
+
+        printf("Client: %s", buffer);
+
+        // Check for exit
+        if (strncmp(buffer, "exit", 4) == 0)
+            break;
+
+        // Send message to client
+        printf("Server: ");
+        fgets(buffer, BUFFER_SIZE, stdin);
+
+        send(client_socket,
+             buffer,
+             strlen(buffer),
+             0);
+
+        // Check for exit
+        if (strncmp(buffer, "exit", 4) == 0)
+            break;
+    }
+
+    close(client_socket);
+    exit(0);
+}
+
+
+// Function to create and run the server
+void start_server(char *ip, int port)
+{
+    int server_socket;
+    int client_socket;
+
+    struct sockaddr_in server_addr;
+    struct sockaddr_in client_addr;
+
+    socklen_t client_len = sizeof(client_addr);
+
+    // Create socket
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_socket < 0)
+    {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    printf("Server socket created successfully.\n");
+
+    // Configure server address
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = inet_addr(ip);
+
+    // Bind socket
+    if (bind(server_socket,
+             (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0)
+    {
+        perror("Bind failed");
+        close(server_socket);
+        exit(1);
+    }
+
+    // Listen for clients
+    if (listen(server_socket, 5) < 0)
+    {
+        perror("Listen failed");
+        close(server_socket);
+        exit(1);
+    }
+
+    printf("Server is listening on port %d...\n", port);
+
+    // Prevent zombie processes
+    signal(SIGCHLD, SIG_IGN);
+
+    while (1)
+    {
+        printf("\nWaiting for client...\n");
+
+        // Accept client
+        client_socket = accept(server_socket,
+                               (struct sockaddr *)&client_addr,
+                               &client_len);
+
+        if (client_socket < 0)
+        {
+            perror("Accept failed");
+            continue;
+        }
+
+        printf("Client connected.\n");
+
+        // Create child process for concurrent communication
+        pid_t pid = fork();
+
+        if (pid < 0)
+        {
+            perror("Fork failed");
+            close(client_socket);
+            continue;
+        }
+
+        if (pid == 0)
+        {
+            // Child process handles the client
+            close(server_socket);
+
+            chat(client_socket);
+        }
+
+        // Parent process continues accepting clients
+        close(client_socket);
+    }
+
+    close(server_socket);
+}
+
+
+// Main function
+int main(int argc, char *argv[])
+{
+    // Check command-line arguments
+    if (argc != 3)
+    {
+        printf("Usage: %s <IP Address> <Port>\n", argv[0]);
+        return 1;
+    }
+
+    // Start server
+    start_server(argv[1], atoi(argv[2]));
+
+    return 0;
+}
+[24bcs141@mepcolinux ex7]$ls
+c  c1.c  c2  c2.c  c3  c3.c  c4.c  cs  ex7.prn  received_text.txt  s  s1.c  s2  s2.c  s3  s3.c  s4.c  text.txt
+[24bcs141@mepcolinux ex7]$./s 172.16.16.200 8088
+Server socket created successfully.
+Server is listening on port 8088...
+
+Waiting for client...
+Client connected.
+
+Waiting for client...
+
+Jeffina connected.
+Jeffina: hey
+Server: Hello
+Jeffina: How are you?
+Server: Fine!
+Jeffina: exit
+[24bcs141@mepcolinux ex7]$./c 172.16.16.200 8088
+Client socket created successfully.
+Enter username: Jeffina
+Connected to server.
+Type 'exit' to end the chat.
+
+Jeffina: Server: OKJeffina: hey
+Server: Hello
+Jeffina: How are you?
+Server: Fine!
+Jeffina: exit
