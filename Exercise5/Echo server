@@ -1,0 +1,354 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+int main(int argc, char *argv[])
+{
+    int sockfd;
+    struct sockaddr_in server_addr;
+    char ack_buffer[1024];
+
+    if (argc != 3)
+    {
+        printf("Usage: %s <server_ip> <port>\n", argv[0]);
+        return 1;
+    }
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0)
+    {
+        perror("socket");
+        return 1;
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(atoi(argv[2]));
+    inet_pton(AF_INET, argv[1], &server_addr.sin_addr);
+
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        perror("connect");
+        return 1;
+    }
+    printf("Connected to server at %s:%s\n", argv[1], argv[2]);
+
+    int count;
+    printf("Enter the number of integers: ");
+    if (scanf("%d", &count) != 1) return 1;
+
+    int array[count];
+    printf("Enter %d integers:\n", count);
+    int i;
+    for (i = 0; i < count; i++)
+    {
+        if (scanf("%d", &array[i]) != 1) return 1;
+    }
+
+    send(sockfd, &count, sizeof(count), 0);
+    send(sockfd, array, sizeof(array), 0);
+    printf("Array sent. Waiting for echo response...\n");
+
+    int n = recv(sockfd, ack_buffer, sizeof(ack_buffer) - 1, 0);
+    if (n > 0)
+    {
+        ack_buffer[n] = '\0';
+        printf("Server Response: %s\n", ack_buffer);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+[24bcs141@mepcolinux ex5]$cat server2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+int main(int argc, char *argv[])
+{
+    int server_fd, client_fd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t len;
+
+    if (argc != 2)
+    {
+        printf("Usage: %s <port>\n", argv[0]);
+        return 1;
+    }
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0)
+    {
+        perror("socket");
+        return 1;
+    }
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(atoi(argv[1]));
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        perror("bind");
+        return 1;
+    }
+
+    listen(server_fd, 5);
+    printf("Simple Array Server running on port %s...\n", argv[1]);
+
+    len = sizeof(client_addr);
+
+    client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &len);
+    if (client_fd < 0)
+    {
+        perror("accept");
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Client connected. Processing data...\n");
+
+    int count = 0;
+    int n1 = recv(client_fd, &count, sizeof(count), 0);
+    if (n1 > 0)
+    {
+        int array[count];
+        int n2 = recv(client_fd, array, sizeof(array), 0);
+        if (n2 > 0)
+        {
+            int sum = 0;
+            printf("Received Array: ");
+            int i;
+            for (i = 0; i < count; i++)
+            {
+                printf("%d ", array[i]);
+                sum += array[i]; // Compute sum
+            }
+            printf("\nCalculated Sum: %d\n", sum);
+
+            char ack[1024];
+            snprintf(ack, sizeof(ack), "ACK: Received. Sum is %d", sum);
+
+            send(client_fd, ack, strlen(ack), 0);
+            printf("Acknowledgement response sent.\n");
+        }
+    }
+
+    close(client_fd);
+    close(server_fd);
+
+    printf("Server job complete. Exiting cleanly.\n");
+    return 0;
+}
+
+[24bcs141@mepcolinux ex5]$./s2 8087
+Simple Array Server running on port 8087...
+Client connected. Processing data...
+Received Array: 3 5 4 7
+Calculated Sum: 19
+Acknowledgement response sent.
+Server job complete. Exiting cleanly.
+[24bcs141@mepcolinux ex5]$./s2 8087
+Simple Array Server running on port 8087...
+Client connected. Processing data...
+Received Array: 4 6 2 5 3
+Calculated Sum: 20
+Acknowledgement response sent.
+Server job complete. Exiting cleanly.
+[24bcs160@mepcolinux jeffi]$./a.out 172.16.16.200 8087
+Connected to server at 172.16.16.200:8087
+Enter the number of integers: 4
+Enter 4 integers:
+3 5 4 7
+Array sent. Waiting for echo response...
+Server Response: ACK: Received. Sum is 19
+[24bcs160@mepcolinux jeffi]$./a.out 172.16.16.200 8087
+Connected to server at 172.16.16.200:8087
+Enter the number of integers: 5
+Enter 5 integers:
+4 6 2 5 3
+Array sent. Waiting for echo response...
+Server Response: ACK: Received. Sum is 20
+
+
+[24bcs141@mepcolinux ex5]$cat client3.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+int main(int argc, char *argv[])
+{
+    int sockfd;
+    struct sockaddr_in server_addr;
+    char ack_buffer[1024]; // Safe array buffer allocation [source: 1.2.6]
+
+    if (argc != 3)
+    {
+        printf("Usage: %s <server_ip> <port>\n", argv[0]);
+        return 1;
+    }
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0)
+    {
+        perror("socket");
+        return 1;
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(atoi(argv[2]));
+    inet_pton(AF_INET, argv[1], &server_addr.sin_addr);
+
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        perror("connect");
+        return 1;
+    }
+    printf("Connected to server at %s:%s\n", argv[1], argv[2]);
+
+    int count;
+    printf("Enter the number of integers: ");
+    if (scanf("%d", &count) != 1) return 1;
+
+    int array[count];
+    printf("Enter %d integers:\n", count);
+    int i;
+    for (i = 0; i < count; i++)
+    {
+        if (scanf("%d", &array[i]) != 1) return 1;
+    }
+
+    send(sockfd, &count, sizeof(count), 0);
+    send(sockfd, array, sizeof(array), 0);
+    printf("Array details sent. Waiting for confirmation...\n");
+
+    int n = recv(sockfd, ack_buffer, sizeof(ack_buffer) - 1, 0);
+    if (n > 0)
+    {
+        ack_buffer[n] = '\0';
+        printf("Server Response: %s\n", ack_buffer);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+[24bcs141@mepcolinux ex5]$cat client3.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+int main(int argc, char *argv[])
+{
+    int server_fd, client_fd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t len;
+
+    if (argc != 2)
+    {
+        printf("Usage: %s <port>\n", argv[0]);
+        return 1;
+    }
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0)
+    {
+        perror("socket");
+        return 1;
+    }
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(atoi(argv[1]));
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        perror("bind");
+        return 1;
+    }
+
+    listen(server_fd, 5);
+    printf("Simple Array Server running on port %s...\n", argv[1]);
+
+    len = sizeof(client_addr);
+
+    client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &len);
+    if (client_fd < 0)
+    {
+        perror("accept");
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Client connected. Processing data...\n");
+
+    int count = 0;
+    int n1 = recv(client_fd, &count, sizeof(count), 0);
+    if (n1 > 0)
+    {
+        int array[count];
+        int n2 = recv(client_fd, array, sizeof(array), 0);
+        if (n2 > 0)
+        {
+            printf("Received Array: ");
+            int i;
+            for (i = 0; i < count; i++)
+            {
+                printf("%d ", array[i]);
+            }
+            printf("\n");
+
+            char ack[1024];
+            snprintf(ack, sizeof(ack), "ACK: Server successfully received your %d integers.", count);
+
+            send(client_fd, ack, strlen(ack), 0);
+            printf("Acknowledgement response sent.\n");
+        }
+    }
+
+    close(client_fd);
+    close(server_fd);
+
+    printf("Server job complete. Exiting cleanly.\n");
+    return 0;
+}
+
+[24bcs141@mepcolinux ex5]$./s3 8087
+Simple Array Server running on port 8087...
+Client connected. Processing data...
+Received Array: 4 6 5 7 8
+Acknowledgement response sent.
+Server job complete. Exiting cleanly.
+[24bcs141@mepcolinux ex5]$./s3 8087
+Simple Array Server running on port 8087...
+Client connected. Processing data...
+Received Array: 3 5 2 4 6 8 7 9
+Acknowledgement response sent.
+Server job complete. Exiting cleanly.
+[24bcs160@mepcolinux jeffi]$./a.out 172.16.16.200 8087
+Connected to server at 172.16.16.200:8087
+Enter the number of integers: 5
+Enter 5 integers:
+4 6 5 7 8
+Array sent. Waiting for echo response...
+Server Response: ACK: Server successfully received your 5 integers.
+[24bcs160@mepcolinux jeffi]$./a.out 172.16.16.200 8087
+Connected to server at 172.16.16.200:8087
+Enter the number of integers: 8
+Enter 8 integers:
+3 5 2 4 6 8 7 9
+Array sent. Waiting for echo response...
