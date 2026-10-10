@@ -1,0 +1,470 @@
+[24bcs141@mepcolinux ex7]$cat c2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define BUFFER_SIZE 1024
+
+
+// Function to receive file from server
+void receive_file(int client_socket)
+{
+    char filename[256];
+    char output_filename[300];
+    char buffer[BUFFER_SIZE];
+
+    FILE *file;
+
+    long file_size;
+    long received_size = 0;
+
+    int bytes_received;
+
+    // Ask for filename
+    printf("\nEnter filename to download: ");
+    scanf("%255s", filename);
+
+    // Send filename to server
+    send(client_socket,
+         filename,
+         strlen(filename) + 1,
+         0);
+
+    // Receive file size
+    if (recv(client_socket,
+             &file_size,
+             sizeof(file_size),
+             0) <= 0)
+    {
+        printf("Server disconnected.\n");
+        return;
+    }
+
+    // Check if file exists
+    if (file_size < 0)
+    {
+        printf("File not found on server.\n");
+        return;
+    }
+
+    // Display file information
+    printf("\n========== FILE INFORMATION ==========\n");
+    printf("File Name : %s\n", filename);
+    printf("File Size : %ld bytes\n", file_size);
+
+    // Create output filename
+    snprintf(output_filename,
+             sizeof(output_filename),
+             "received_%s",
+             filename);
+
+    // Open output file
+    file = fopen(output_filename, "wb");
+
+    if (file == NULL)
+    {
+        perror("File creation failed");
+        return;
+    }
+
+    printf("\nReceiving file...\n");
+
+    // Receive file contents
+    while (received_size < file_size)
+    {
+        bytes_received = recv(client_socket,
+                              buffer,
+                              BUFFER_SIZE,
+                              0);
+
+        if (bytes_received <= 0)
+        {
+            printf("Connection lost during transfer.\n");
+            break;
+        }
+
+        fwrite(buffer,
+               1,
+               bytes_received,
+               file);
+
+        received_size += bytes_received;
+    }
+
+    fclose(file);
+
+    // Check transfer status
+    if (received_size == file_size)
+    {
+        printf("File received successfully.\n");
+    }
+    else
+    {
+        printf("File transfer incomplete.\n");
+        return;
+    }
+
+    // Display received file
+    file = fopen(output_filename, "rb");
+
+    if (file == NULL)
+    {
+        perror("Cannot open received file");
+        return;
+    }
+
+    printf("\n========== RECEIVED FILE CONTENT ==========\n");
+
+    while (fgets(buffer, BUFFER_SIZE, file) != NULL)
+    {
+        printf("%s", buffer);
+    }
+
+    printf("\n===========================================\n");
+
+    fclose(file);
+
+    printf("\nSaved as       : %s\n", output_filename);
+    printf("Received size  : %ld bytes\n", received_size);
+}
+
+
+// Function to start the client
+void start_client(char *ip, int port)
+{
+    int client_socket;
+
+    struct sockaddr_in server_addr;
+
+    // Create socket
+    client_socket = socket(AF_INET,
+                           SOCK_STREAM,
+                           0);
+
+    if (client_socket < 0)
+    {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    printf("Client socket created successfully.\n");
+
+    // Configure server address
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = inet_addr(ip);
+
+    // Connect to server
+    if (connect(client_socket,
+                (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) < 0)
+    {
+        perror("Connection failed");
+        close(client_socket);
+        exit(1);
+    }
+
+    printf("Connected to server.\n");
+
+    // Receive file
+    receive_file(client_socket);
+
+    close(client_socket);
+}
+
+
+// Main function
+int main(int argc, char *argv[])
+{
+    // Check command-line arguments
+    if (argc != 3)
+    {
+        printf("Usage: %s <Server IP> <Port>\n", argv[0]);
+        return 1;
+    }
+
+    // Start client
+    start_client(argv[1], atoi(argv[2]));
+
+    return 0;
+}
+[24bcs141@mepcolinux ex7]$cat s2,c
+cat: s2,c: No such file or directory
+[24bcs141@mepcolinux ex7]$cat s2.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <signal.h>
+
+#define BUFFER_SIZE 1024
+
+
+// Function to send file to client
+void send_file(int client_socket)
+{
+    char filename[256];
+    char buffer[BUFFER_SIZE];
+
+    FILE *file;
+    struct stat file_info;
+
+    long file_size;
+    long bytes_read;
+
+    // Receive filename from client
+    memset(filename, 0, sizeof(filename));
+
+    if (recv(client_socket,
+             filename,
+             sizeof(filename) - 1,
+             0) <= 0)
+    {
+        close(client_socket);
+        exit(0);
+    }
+
+    printf("Requested file: %s\n", filename);
+
+    // Get file information
+    if (stat(filename, &file_info) < 0)
+    {
+        printf("File not found.\n");
+
+        file_size = -1;
+
+        send(client_socket,
+             &file_size,
+             sizeof(file_size),
+             0);
+
+        close(client_socket);
+        exit(0);
+    }
+
+    file_size = file_info.st_size;
+
+    // Display file information
+    printf("\n========== FILE INFORMATION ==========\n");
+    printf("File Name : %s\n", filename);
+    printf("File Size : %ld bytes\n", file_size);
+
+    // Open file
+    file = fopen(filename, "rb");
+
+    if (file == NULL)
+    {
+        perror("File opening failed");
+        close(client_socket);
+        exit(1);
+    }
+
+    // Send file size
+    send(client_socket,
+         &file_size,
+         sizeof(file_size),
+         0);
+
+    // Display file content
+    printf("\n========== FILE CONTENT ==========\n");
+
+    while (fgets(buffer, BUFFER_SIZE, file) != NULL)
+    {
+        printf("%s", buffer);
+    }
+
+    printf("\n==================================\n");
+
+    // Move file pointer back to beginning
+    rewind(file);
+
+    printf("Sending file to client...\n");
+
+    // Send file contents
+    while ((bytes_read = fread(buffer,
+                               1,
+                               BUFFER_SIZE,
+                               file)) > 0)
+    {
+        send(client_socket,
+             buffer,
+             bytes_read,
+             0);
+    }
+
+    printf("File transfer completed.\n");
+
+    fclose(file);
+    close(client_socket);
+
+    printf("Client disconnected.\n");
+
+    exit(0);
+}
+
+
+// Function to start the server
+void start_server(char *ip, int port)
+{
+    int server_socket;
+    int client_socket;
+
+    struct sockaddr_in server_addr;
+    struct sockaddr_in client_addr;
+
+    socklen_t client_len = sizeof(client_addr);
+
+    // Create socket
+    server_socket = socket(AF_INET,
+                           SOCK_STREAM,
+                           0);
+
+    if (server_socket < 0)
+    {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    printf("Server socket created successfully.\n");
+
+    // Configure server address
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = inet_addr(ip);
+
+    // Bind socket
+    if (bind(server_socket,
+             (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0)
+    {
+        perror("Bind failed");
+        close(server_socket);
+        exit(1);
+    }
+
+    // Listen for clients
+    if (listen(server_socket, 5) < 0)
+    {
+        perror("Listen failed");
+        close(server_socket);
+        exit(1);
+    }
+
+    printf("Server is listening on port %d...\n", port);
+
+    // Prevent zombie processes
+    signal(SIGCHLD, SIG_IGN);
+
+    while (1)
+    {
+        printf("\nWaiting for client...\n");
+
+        // Accept client
+        client_socket = accept(server_socket,
+                               (struct sockaddr *)&client_addr,
+                               &client_len);
+
+        if (client_socket < 0)
+        {
+            perror("Accept failed");
+            continue;
+        }
+
+        printf("Client connected.\n");
+
+        // Create child process
+        pid_t pid = fork();
+
+        if (pid < 0)
+        {
+            perror("Fork failed");
+            close(client_socket);
+            continue;
+        }
+
+        if (pid == 0)
+        {
+            // Child handles the client
+            close(server_socket);
+
+            send_file(client_socket);
+        }
+
+        // Parent continues accepting clients
+        close(client_socket);
+    }
+
+    close(server_socket);
+}
+
+
+// Main function
+int main(int argc, char *argv[])
+{
+    // Check command-line arguments
+    if (argc != 3)
+    {
+        printf("Usage: %s <IP Address> <Port>\n", argv[0]);
+        return 1;
+    }
+
+    // Start server
+    start_server(argv[1], atoi(argv[2]));
+
+    return 0;
+}
+[24bcs141@mepcolinux ex7]$ls
+c  c1.c  c2  c2.c  c3  c3.c  c4.c  cs  ex7.prn  received_text.txt  s  s1.c  s2  s2.c  s3  s3.c  s4.c  text.txt
+[24bcs141@mepcolinux ex7]$./s2 172.16.16.200 8088
+Server socket created successfully.
+Server is listening on port 8088...
+
+Waiting for client...
+Client connected.
+
+Waiting for client...
+Requested file: text.txt
+
+========== FILE INFORMATION ==========
+File Name : text.txt
+File Size : 6 bytes
+
+========== FILE CONTENT ==========
+Ayyo
+
+==================================
+Sending file to client...
+File transfer completed.
+Client disconnected.
+^C
+[24bcs141@mepcolinux ex7]$cat text.txt
+Ayyo
+
+[24bcs141@mepcolinux ex7]$./c2 172.16.16.200 8088
+Client socket created successfully.
+Connected to server.
+
+Enter filename to download: text.txt
+
+========== FILE INFORMATION ==========
+File Name : text.txt
+File Size : 6 bytes
+
+Receiving file...
+File received successfully.
+
+========== RECEIVED FILE CONTENT ==========
+Ayyo
+
+===========================================
+
+Saved as       : received_text.txt
+Received size  : 6 bytes
+[24bcs141@mepcolinux ex7]$cat received_text.txt
+Ayyo
