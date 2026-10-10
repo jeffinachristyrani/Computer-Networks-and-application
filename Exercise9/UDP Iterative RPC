@@ -1,0 +1,205 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <ctype.h>
+
+#define PORT 5001
+#define BUFFER_SIZE 1024
+
+void to_lowercase(char *str) {
+   int i;
+    for (i = 0; str[i]; i++) {
+        str[i] = tolower(str[i]);
+    }
+}
+
+int main() {
+    int server_fd;
+    char buffer[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    if ((server_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_fd, (const struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("UDP RPC Server is running on port %d...\n", PORT);
+    printf("Supported functions: add, sub, mul, div, pow\n\n");
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE);
+        memset(response, 0, BUFFER_SIZE);
+        int len = recvfrom(server_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client_addr, &addr_len);
+        buffer[len] = '\0';
+
+        printf("Received RPC payload: '%s' from client\n", buffer);
+
+        char func_name[50] = {0};
+        double arg1, arg2;
+
+        int parsed_tokens = sscanf(buffer, "%49s %lf %lf", func_name, &arg1, &arg2);
+
+        if (parsed_tokens < 1) {
+            strcpy(response, "Error: Empty request string.");
+        } else {
+            to_lowercase(func_name);
+
+            if (strcmp(func_name, "add") == 0) {
+                if (parsed_tokens == 3) sprintf(response, "Result: %.4f", arg1 + arg2);
+                else strcpy(response, "Error: 'add' requires exactly 2 arguments.");
+            }
+            else if (strcmp(func_name, "sub") == 0) {
+                if (parsed_tokens == 3) sprintf(response, "Result: %.4f", arg1 - arg2);
+                else strcpy(response, "Error: 'sub' requires exactly 2 arguments.");
+            }
+            else if (strcmp(func_name, "mul") == 0) {
+                if (parsed_tokens == 3) sprintf(response, "Result: %.4f", arg1 * arg2);
+                else strcpy(response, "Error: 'mul' requires exactly 2 arguments.");
+            }
+            else if (strcmp(func_name, "div") == 0) {
+                if (parsed_tokens != 3) {
+                    strcpy(response, "Error: 'div' requires exactly 2 arguments.");
+                } else if (arg2 == 0) {
+                    strcpy(response, "Error: Division by zero exception.");
+                } else {
+                    sprintf(response, "Result: %.4f", arg1 / arg2);
+                }
+            }
+            else if (strcmp(func_name, "pow") == 0) {
+                if (parsed_tokens == 3) {
+                    double result = 1.0;
+                    int exp = (int)arg2;
+                    int i;
+                    for(i = 0; i < (exp > 0 ? exp : -exp); i++) result *= arg1;
+                    if(exp < 0) result = 1.0 / result;
+                    sprintf(response, "Result: %.4f", result);
+                } else {
+                    strcpy(response, "Error: 'pow' requires exactly 2 arguments.");
+                }
+            }
+            else {
+                strcpy(response, "Function not found");
+            }
+        }
+
+        sendto(server_fd, response, strlen(response), 0, (const struct sockaddr *)&client_addr, addr_len);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+[24bcs141@mepcolinux ex9]$cat c1.c
+cat: c1.c: No such file or directory
+[24bcs141@mepcolinux ex9]$cat c1.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define PORT 5001
+#define BUFFER_SIZE 1024
+
+int main() {
+    int client_fd;
+    char buffer[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+    struct sockaddr_in server_addr;
+    socklen_t addr_len = sizeof(server_addr);
+
+    // 1. Create UDP socket
+    if ((client_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = inet_addr("172.16.16.200");
+
+    printf("=== Remote Procedure Call (RPC) Client ===\n");
+    printf("Available remote calls:\n");
+    printf("  add num1 num2\n");
+    printf("  sub num1 num2\n");
+    printf("  mul num1 num2\n");
+    printf("  div num1 num2\n");
+    printf("  pow base exponent\n");
+    printf("Type 'exit' to terminate client application.\n\n");
+
+    while (1) {
+        printf("Enter RPC invocation string: ");
+        fgets(buffer, BUFFER_SIZE, stdin);
+
+        buffer[strcspn(buffer, "\n")] = 0;
+
+        if (strcmp(buffer, "exit") == 0) {
+            printf("Closing client connection.\n");
+            break;
+        }
+
+        if (strlen(buffer) == 0) {
+            continue;
+        }
+
+        sendto(client_fd, buffer, strlen(buffer), 0, (const struct sockaddr *)&server_addr, addr_len);
+
+        memset(response, 0, BUFFER_SIZE);
+        int len = recvfrom(client_fd, response, BUFFER_SIZE, 0, (struct sockaddr *)&server_addr, &addr_len);
+        response[len] = '\0';
+
+        printf("Server Response: %s\n\n", response);
+    }
+
+    close(client_fd);
+    return 0;
+}
+
+[24bcs141@mepcolinux ex9]$./s
+UDP RPC Server is running on port 5001...
+Supported functions: add, sub, mul, div, pow
+
+Received RPC payload: 'add 7 8' from client
+Received RPC payload: 'sub 9 8' from client
+Received RPC payload: 'mul 8 7' from client
+Received RPC payload: 'floor 3 5' from client
+Received RPC payload: 'pow 4' from client
+
+[24bcs141@mepcolinux ex9]$./c
+=== Remote Procedure Call (RPC) Client ===
+Available remote calls:
+ - add <num1> <num2>
+ - sub <num1> <num2>
+ - mul <num1> <num2>
+ - div <num1> <num2>
+ - pow <num1> <num2>
+Type 'exit' to terminate client application.
+
+Enter RPC invocation string: add 7 8
+Server Response: Result: 15.0000
+
+Enter RPC invocation string: sub 9 8
+Server Response: Result: 1.0000
+
+Enter RPC invocation string: mul 8 7
+Server Response: Result: 56.0000
+
+Enter RPC invocation string: floor 3 5
+Server Response: Function not found
+
+Enter RPC invocation string: pow 4
+Server Response: Error: 'pow' requires exactly 2 arguments.
